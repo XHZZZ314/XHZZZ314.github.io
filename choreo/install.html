@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ChoreoHelper 安装指南</title>
+<style>
+  :root { --bg:#0d1117; --card:#161b22; --border:#30363d; --text:#c9d1d9; --accent:#58a6ff; --green:#3fb950; --yellow:#d29922; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:'Segoe UI',system-ui,sans-serif; background:var(--bg); color:var(--text); line-height:1.7; }
+  .wrap { max-width:860px; margin:0 auto; padding:40px 20px 80px; }
+  h1 { font-size:28px; margin-bottom:8px; color:#fff; }
+  .sub { color:#8b949e; margin-bottom:32px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:24px; margin-bottom:20px; }
+  .card h2 { font-size:18px; color:var(--accent); margin-bottom:12px; }
+  .steps { counter-reset:step; list-style:none; }
+  .steps li { position:relative; padding:0 0 16px 44px; }
+  .steps li::before { counter-increment:step; content:counter(step); position:absolute; left:0; top:2px; width:28px; height:28px; border-radius:50%; background:var(--accent); color:#fff; font-weight:600; display:flex; align-items:center; justify-content:center; font-size:14px; }
+  code { background:#0d1117; border:1px solid var(--border); padding:2px 8px; border-radius:6px; font-family:Consolas,monospace; font-size:13px; color:#79c0ff; }
+  .btn { display:inline-block; background:#238636; color:#fff; padding:10px 24px; border-radius:8px; text-decoration:none; font-weight:600; margin-top:8px; }
+  .btn:hover { background:#2ea043; }
+  .warn { background:rgba(210,153,34,.1); border:1px solid rgba(210,153,34,.4); }
+  .ok { color:var(--green); font-weight:600; }
+  table { width:100%; border-collapse:collapse; margin:12px 0; }
+  th,td { border:1px solid var(--border); padding:8px 12px; text-align:left; font-size:14px; }
+  th { background:#21262d; }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>ChoreoHelper 安装指南</h1>
+  <p class="sub">FF14 国服编舞助手 —— 时间轴编舞 · 游戏内实时播放 · 宏生成</p>
+
+  <div class="card">
+    <h2>方式一：插件仓库安装（推荐）</h2>
+    <ol class="steps">
+      <li>打开橙月启动器 → <b>设置</b> → <b>插件设置</b> → <b>设置</b> → <b>添加自定义仓库</b></li>
+      <li>仓库 URL 填入：<br><code>https://xhzzz314.github.io/choreo/repo/pluginmaster.json</code></li>
+      <li>插件列表搜索 <b>ChoreoHelper</b> → 安装</li>
+      <li>进游戏后，打开编舞网页：<br><a href="https://xhzzz314.github.io/choreo/" target="_blank"><b>https://xhzzz314.github.io/choreo/</b></a></li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h2>方式二：手动安装（devPlugins）</h2>
+    <ol class="steps">
+      <li><a href="https://xhzzz314.github.io/choreo/repo/latest.zip" target="_blank">下载 latest.zip</a></li>
+      <li>关闭游戏，把 zip 里的 <code>ChoreoHelper.dll</code> 和 <code>manifest.json</code> 解压到 <code>%AppData%XIVLauncherCNdevPluginsChoreoHelper</code></li>
+      <li>启动游戏，打开上面的编舞网页即可</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h2>使用说明</h2>
+    <table>
+      <tr><th>功能</th><th>操作</th></tr>
+      <tr><td>加动作</td><td>左侧动作库点击动作，自动追加到时间轴</td></tr>
+      <tr><td>调整时间</td><td>拖拽时间轴上的色块（可开 0.5s 吸附）</td></tr>
+      <tr><td>游戏内播放</td><td>点 ▶ 按钮，角色按时间轴做动作</td></tr>
+      <tr><td>定位</td><td>拖底部时间尺，跳到该时刻并执行动作</td></tr>
+      <tr><td>导出宏</td><td>右侧宏面板复制，贴进游戏宏设置</td></tr>
+      <tr><td>歌词</td><td>歌词按钮 → 网易云搜索 / 贴 LRC</td></tr>
+    </table>
+    <p>连接状态看网页顶部：<span class="ok">绿点 = 已连接游戏</span>，灰点 = 游戏未开或插件未加载。</p>
+  </div>
+
+  <div class="card warn">
+    <h2>⚠️ 风险须知</h2>
+    <p>插件通过游戏自身的 ProcessChatBox 接口执行命令，与手动输入完全等价。但任何第三方插件都有理论上的风险，请在安全场合使用，自行斟酌。</p>
+  </div>
+
+  <div class="card">
+    <h2>常见问题</h2>
+    <table>
+      <tr><th>问题</th><th>解决</th></tr>
+      <tr><td>网页显示未连接</td><td>确认游戏已启动、插件已加载（聊天框有启动提示）</td></tr>
+      <tr><td>角色不动</td><td>游戏窗口别最小化；角色不能在战斗/过场中</td></tr>
+      <tr><td>动作被跳过</td><td>上一个动作还没做完会被打断，属正常</td></tr>
+    </table>
+  </div>
+
+  <a class="btn" href="https://xhzzz314.github.io/choreo/">打开编舞编辑器 →</a>
+</div>
+</body>
+</html>

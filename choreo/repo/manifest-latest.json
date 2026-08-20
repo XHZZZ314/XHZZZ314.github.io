@@ -1,0 +1,19 @@
+{
+  "Author": "XHZZZ314",
+  "Name": "ChoreoHelper",
+  "InternalName": "ChoreoHelper",
+  "AssemblyVersion": "0.3.1.0",
+  "Description": "FF14 Choreography Helper - Timeline Editor with HTTP API",
+  "ApplicableVersion": "any",
+  "DalamudApiLevel": 15,
+  "IsHide": false,
+  "IsTestingExclusive": false,
+  "IconUrl": "",
+  "Punchline": "Choreography timeline editor with in-game playback",
+  "Changelog": "v0.3.1: Stable release. ProcessChatBoxEntry command execution, timeline playback API, multi-dancer choreography web editor.",
+  "AcceptsFeedback": false,
+  "DownloadLinkInstall": "",
+  "DownloadLinkUpdate": "",
+  "DownloadLinkTesting": "",
+  "LastUpdated": "2026-08-20 16:32:00Z"
+}

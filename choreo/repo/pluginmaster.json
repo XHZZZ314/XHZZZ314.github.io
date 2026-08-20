@@ -1,0 +1,20 @@
+[
+  {
+    "Author": "XHZZZ314",
+    "Name": "ChoreoHelper",
+    "InternalName": "ChoreoHelper",
+    "AssemblyVersion": "0.3.1.0",
+    "Description": "FF14 国服编舞助手 - 时间轴编舞 + 游戏内实时播放 + 宏生成。配套网页编辑器: https://xhzzz314.github.io/choreo/",
+    "ApplicableVersion": "any",
+    "DalamudApiLevel": 15,
+    "IsHide": false,
+    "IsTestingExclusive": false,
+    "IconUrl": "",
+    "Punchline": "Choreography timeline editor with in-game playback",
+    "AcceptsFeedback": false,
+    "DownloadLinkInstall": "https://xhzzz314.github.io/choreo/repo/latest.zip",
+    "DownloadLinkUpdate": "https://xhzzz314.github.io/choreo/repo/latest.zip",
+    "DownloadLinkTesting": "https://xhzzz314.github.io/choreo/repo/latest.zip",
+    "LastUpdated": "2026-08-21 00:30:00Z"
+  }
+]
