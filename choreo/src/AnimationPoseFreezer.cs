@@ -237,6 +237,15 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             _log.Error(ex, "Build emote map failed");
         }
         _emoteMap = map;
+        // 表内归属反向索引（跨命令学习污染防护）
+        var owners = new System.Collections.Concurrent.ConcurrentDictionary<ushort, HashSet<string>>();
+        foreach (var kv in map)
+            foreach (var tl in kv.Value.Timelines)
+            {
+                var set = owners.GetOrAdd(tl, _ => new HashSet<string>());
+                lock (set) set.Add(kv.Key);
+            }
+        TimelineOwners = owners;
         // 预热待机集合：此时通常无表情在播（map 在首次定格请求时构建，previewMode 尚未开启），
         // 槽0上的值即主待机时间轴 —— 没有它，stance reset（循环姿态解除）永远不生效
         try
@@ -990,9 +999,26 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
         _log.Information("Idle timeline observed: {id} (excluded from learning)", slot0);
     }
 
+    // 时间轴 → 拥有它的命令集合（表内权威归属）：跨命令学习污染防护 —— 压测实测 /mandervilledance
+    // 被学进 /tremble 的 3771（5 个命令共学同一 id），播放污染 id = 直接播出别人的动画 = "不生效"
+    private static System.Collections.Concurrent.ConcurrentDictionary<ushort, HashSet<string>>? TimelineOwners;
+
+    /// <summary>表内归属校验：id 在表内归属其他命令（且不归属本命令）→ 绝不学习/播放。</summary>
+    private static bool OwnerAllows(string? command, ushort timelineId)
+    {
+        if (string.IsNullOrEmpty(command) || TimelineOwners == null) return true;
+        if (!TimelineOwners.TryGetValue(timelineId, out var owners)) return true; // 表外 id（真正的变体）不受限
+        return owners.Contains(command);
+    }
+
     private static void LearnTimeline(string? command, ushort timelineId)
     {
         if (string.IsNullOrEmpty(command) || timelineId == 0) return;
+        if (!OwnerAllows(command, timelineId))
+        {
+            // 表内归属别的命令 —— 拒学（跨命令污染是"特殊动作不生效/错误"的根源之一）
+            return;
+        }
         var list = LearnedTimelines.GetOrAdd(command, _ => new List<ushort>());
         lock (list) { if (!list.Contains(timelineId)) list.Add(timelineId); } // 有序：最近学习的在重试轮换中优先
     }
@@ -1126,8 +1152,11 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
     private bool TryPlayTimelinePreferred(string command)
     {
         if (!LearnedTimelines.TryGetValue(command, out var learned) || learned.Count == 0) return false;
-        ushort playId;
-        lock (learned) playId = learned[_playIdx % learned.Count];
+        // 只播归属校验通过的 learned id（污染条目直接跳过 —— 它们是别的命令的动画）
+        List<ushort> cands;
+        lock (learned) cands = learned.Where(id => OwnerAllows(command, id)).ToList();
+        if (cands.Count == 0) return false;
+        var playId = cands[_playIdx % cands.Count];
         if (!TryGetLocalCharacter(out var chara)) return false;
         try
         {
