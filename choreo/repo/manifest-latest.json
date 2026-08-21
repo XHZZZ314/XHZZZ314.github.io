@@ -2,7 +2,7 @@
   "Author": "XHZZZ314",
   "Name": "ChoreoHelper",
   "InternalName": "ChoreoHelper",
-  "AssemblyVersion": "0.5.2.0",
+  "AssemblyVersion": "0.5.12.0",
   "Description": "FF14 Choreography Helper - Timeline Editor with HTTP API",
   "ApplicableVersion": "any",
   "DalamudApiLevel": 15,
@@ -10,10 +10,10 @@
   "IsTestingExclusive": false,
   "IconUrl": "",
   "Punchline": "Choreography timeline editor with in-game playback",
-  "Changelog": "v0.5.2: 修复动作延迟/对不上、动作被吞、动作重复循环(移除2.5s周期重执行,循环表情自然循环;命令200ms节流防覆盖;中途播放不再吞起点动作)。",
+  "Changelog": "v0.5.12: 动画执行通道重构(直接强制时间轴,瞬时无忙窗口);拖动流分离(拖动中不执行,停下精准定格);三层停表+Sequencer槽速度冻结(彻底解决停不住/抽搐);变体学习缓存+族内id轮换(解决吞动作/错误动作/叠加);循环动画取模;560动作压测零错误。v0.5.2: 基础版本。",
   "AcceptsFeedback": false,
   "DownloadLinkInstall": "https://xhzzz314.github.io/choreo/repo/latest.zip",
   "DownloadLinkUpdate": "https://xhzzz314.github.io/choreo/repo/latest.zip",
   "DownloadLinkTesting": "https://xhzzz314.github.io/choreo/repo/latest.zip",
-  "LastUpdated": "2026-08-21 12:00:00Z"
+  "LastUpdated": "2026-08-22 00:45:00Z"
 }

@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Platform>x64</Platform>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>ChoreoHelper</AssemblyName>
+    <RootNamespace>ChoreoHelper</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <NoWarn>CS0436;CS8618;CS8601;CS8602;CS8603;CS8604;CS8625</NoWarn>
+    <Version>0.5.12.0</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Dalamud">
+      <HintPath>$(AppData)\XIVLauncherCN\addon\Hooks\dev\Dalamud.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Dalamud.Common">
+      <HintPath>$(AppData)\XIVLauncherCN\addon\Hooks\dev\Dalamud.Common.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Lumina">
+      <HintPath>$(AppData)\XIVLauncherCN\addon\Hooks\dev\Lumina.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Lumina.Excel">
+      <HintPath>$(AppData)\XIVLauncherCN\addon\Hooks\dev\Lumina.Excel.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+      <Reference Include="InteropGenerator.Runtime">
+      <HintPath>$(AppData)\XIVLauncherCN\addon\Hooks\dev\InteropGenerator.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="FFXIVClientStructs">
+      <HintPath>$(AppData)\XIVLauncherCN\addon\Hooks\dev\FFXIVClientStructs.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="plugin.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Target Name="CopyToDevPlugins" AfterTargets="Build" Condition="'$(Configuration)' == 'Debug'">
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(AppData)\XIVLauncherCN\devPlugins\ChoreoHelper\" />
+    <Copy SourceFiles="$(TargetDir)plugin.json" DestinationFolder="$(AppData)\XIVLauncherCN\devPlugins\ChoreoHelper\" />
+  </Target>
+</Project>

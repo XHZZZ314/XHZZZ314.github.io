@@ -1,0 +1,41 @@
+# ChoreoHelper — FF14 国服编舞助手
+
+时间轴编舞 · 游戏内实时播放 · 拖动定格预览 · 宏分页生成
+
+**网页应用：https://xhzzz314.github.io/choreo/**
+**安装指南：https://xhzzz314.github.io/choreo/install.html**
+
+## 功能
+
+- **时间轴编辑**：多舞者轨道、动作/切换/台词三种片段、拖拽调整、冲突自动顺延、空隙自动补齐
+- **动作库**：全部游戏表情 + 职业技能（自动插入职业切换），显示动作实测时长
+- **拖动定格预览**：在时间轴上来回拖动，游戏角色实时显示对应时刻的姿势（Ktisis 同款直接时间轴技术）
+- **游戏内播放**：整个编排按时间轴在游戏里实时播放
+- **宏生成**：自动 /nextmacro 分页（每页 14 行）、一键复制、TXT 导出、歌词联动
+
+## 安装（两种方式）
+
+**方式一 · 插件仓库（推荐）**
+1. 游戏内 `/xlplugins` → 设置 → 自定义插件仓库
+2. 添加：`https://xhzzz314.github.io/choreo/repo/pluginmaster.json`
+3. 搜索 ChoreoHelper 安装
+
+**方式二 · 手动**
+1. 下载 [latest.zip](./repo/latest.zip)
+2. 关闭游戏，把 `ChoreoHelper.dll` 解压到 `%AppData%\XIVLauncherCN\devPlugins\ChoreoHelper\`
+3. 启动游戏
+
+装好插件后打开上面的网页应用即可（网页与游戏须在同一台电脑，通过 localhost:48794 通信）。
+
+## 系统要求
+
+- 最终幻想14 国服 + 橙月启动器（XIVLauncher CN，Dalamud API Level 15）
+
+## 源码
+
+`src/` 目录（C# / .NET 10，Dalamud 插件 + 单文件 HTML 前端）。
+
+## 更新日志
+
+- **v0.5.12**（2026-08-22）：动画执行通道重构——直接强制时间轴（瞬时、无忙窗口）；拖动流分离（拖动中不执行、停下精准定格）；三层停表 + Sequencer 槽速度冻结；变体学习缓存 + 族内 id 轮换；循环动画取模；560 动作压测零错误
+- **v0.5.2**（2026-08-21）：首个发布版本

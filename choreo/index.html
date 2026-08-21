@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>FF14 缂栬垶鏃堕棿杞?v5</title>
+<title>FF14 编舞时间轴 v6</title>
 <style>
 :root{
   --bg:#0a0d12;--bg-2:#0f1319;--panel:#131820;--panel-2:#181f29;--panel-3:#1f2733;
@@ -145,8 +145,8 @@ body{background:var(--bg);color:var(--text);font:13px/1.5 system-ui,"Segoe UI","
 .gl-toggle input{cursor:pointer}
 
 /* Macro panel */
-.macro-pnl{border-top:2px solid var(--border-2);background:var(--panel);display:flex;flex-direction:column;max-height:220px;transition:max-height .2s}
-.macro-pnl.collapsed{max-height:26px}
+.macro-pnl{border-top:2px solid var(--border-2);background:var(--panel);display:flex;flex-direction:column;flex-shrink:0}
+.macro-pnl.collapsed{overflow:hidden}
 .macro-hdr{display:flex;align-items:center;gap:5px;padding:3px 10px;cursor:pointer;background:var(--bg-2);border-bottom:1px solid var(--border);min-height:26px}
 .macro-hdr .mp-ttl{font-size:11px;font-weight:600;color:var(--accent)}
 .macro-tabs{display:flex;gap:2px;flex:1;flex-wrap:wrap}
@@ -205,7 +205,7 @@ textarea:focus,.modal input:focus{border-color:var(--accent)}
 .bottom-ruler .r-tick{position:absolute;width:1px;background:var(--border)}
 .bottom-ruler .r-tick.major{height:14px;bottom:0;background:var(--text-dim)}
 .bottom-ruler .r-tick.minor{height:6px;bottom:0;opacity:.5}
-.bottom-ruler .r-lb{position:absolute;font-size:9px;color:var(--text-dim);white-space:nowrap}
+.bottom-ruler .r-lb{position:absolute;font-size:12px;color:var(--text-dim);white-space:nowrap}
 
 .play-overlay{position:fixed;top:60px;right:16px;width:240px;max-height:320px;overflow-y:auto;background:var(--panel);border:1px solid var(--border-2);border-radius:8px;padding:8px;z-index:100;box-shadow:0 4px 12px rgba(0,0,0,0.4)}
 .play-overlay .po-empty{text-align:center;color:var(--text-dim);padding:12px;font-size:12px}
@@ -216,6 +216,55 @@ textarea:focus,.modal input:focus{border-color:var(--accent)}
 .play-overlay .po-action{background:rgba(93,222,142,0.15);border-left:3px solid var(--c-skill)}
 .play-overlay .po-lyric{background:rgba(224,123,245,0.15);border-left:3px solid var(--c-lyric)}
 .play-overlay .po-switch{background:rgba(251,146,60,0.15);border-left:3px solid var(--c-switch)}
+
+/* === 宏面板分栏 & 可调高度 === */
+.macro-body{flex:1;display:flex;gap:6px;padding:6px;overflow-x:auto;overflow-y:hidden;min-height:0}
+.macro-page{display:flex;flex-direction:column;flex:1 1 0;min-width:260px;gap:3px;min-height:0}
+.macro-page-hdr{display:flex;align-items:center;justify-content:space-between;font-size:11px;color:var(--text-dim);gap:6px}
+.macro-page-hdr .mph-tt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.macro-page-hdr .btn{font-size:11px;padding:2px 10px;flex-shrink:0}
+.macro-resize{height:7px;cursor:ns-resize;background:var(--bg-2);flex-shrink:0;transition:background .1s}
+.macro-resize:hover,.macro-resize.dragging{background:var(--accent)}
+.macro-tx{min-height:60px}
+.macro-pnl.fullscreen{position:fixed;left:0;right:0;bottom:0;z-index:150;box-shadow:0 -8px 30px rgba(0,0,0,.5);background:var(--panel)}
+.macro-pnl.fullscreen .macro-body{overflow-x:auto;overflow-y:hidden}
+.macro-pnl.fullscreen .macro-page{min-width:340px}
+
+/* === 字体放大 & 动作库可读性（覆盖上方小字号规则） === */
+body{font-size:13px}
+.btn{font-size:13px;padding:4px 11px}
+.btn.icon{font-size:15px;padding:4px 8px}
+.ctrl label{font-size:11px}
+.brand .logo{font-size:17px}
+.brand .sub{font-size:11px}
+.dancer-sel button{font-size:13px;padding:3px 11px}
+.time-disp{font-size:15px}
+.search input{font-size:13px;padding:6px 10px}
+.tab-grp{font-size:11px;padding:4px 6px 2px}
+.tab{font-size:12px;padding:4px 8px}
+.tab .badge{font-size:10px}
+.act-cols{grid-template-columns:repeat(3,1fr);gap:5px}
+.act-item{min-height:42px;padding:6px 6px}
+.act-item .ai-name{font-size:13px;white-space:normal;word-break:break-all;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.25}
+.act-item .ai-job{font-size:11px}
+.ai-loop{font-size:10px}
+.lane-label{font-size:11px;width:112px}
+.d-hdr .dh-nm{font-size:13px}
+.d-hdr .dh-jb{font-size:11px}
+.d-hdr .dh-rsz label{font-size:10px}
+.d-hdr .dh-rsz input{font-size:11px;width:40px}
+.d-hdr .dh-toggle{font-size:12px}
+.clip .c-nm{font-size:13px}
+.r-lb{font-size:9px}
+.macro-hdr .mp-ttl{font-size:13px}
+.macro-tab{font-size:11px;padding:2px 9px}
+.macro-tx{font-size:12px}
+.global-lyric .gl-hdr .gl-ttl{font-size:13px}
+.gl-toggle{font-size:11px}
+.bottombar{font-size:10px}
+.play-overlay .po-item{font-size:13px}
+.play-overlay .po-dancer{font-size:11px}
+.play-overlay .po-empty{font-size:13px}
 </style>
 </head>
 <body>
@@ -231,7 +280,7 @@ var LABEL_W=100;
 
 var dancerColors=['#7eb3ff','#e07bf5','#5dde8e'];
 var store={
-  connected:false,pps:60,snapEnabled:true,snapGrid:1.0,snapThreshold:0.3,currentTime:0,isPlaying:false,speed:1,totalDuration:60,
+  connected:false,pps:60,snapEnabled:true,snapGrid:1.0,snapThreshold:0.3,currentTime:0,isPlaying:false,speed:1,totalDuration:60,measuredDur:{},
   emotes:[],races:[],actions:[],classJobs:[],
   jobMap:{},
   dancers:[],dancerCount:1,
@@ -279,6 +328,7 @@ function saveHistory(){
   store.history=store.history.slice(0,store.historyIdx+1);
   store.history.push(s);store.historyIdx++;
   if(store.history.length>50){store.history.shift();store.historyIdx--}
+  try{localStorage.setItem('choreo_draft',JSON.stringify({dancers:store.dancers,globalLyrics:store.globalLyrics,dancerCount:store.dancerCount,showLyricMacro:store.showLyricMacro}))}catch(e){}
 }
 function undo(){
   if(store.historyIdx<=0)return;
@@ -318,20 +368,55 @@ function parseLRC(text){
   return lines
 }
 
-function sendSeek(t){
-  apiFetch('/playback/seek',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({time:Math.round(t*100)/100})}).catch(function(){});
-}
-
-function apiFetch(path,opts){return fetch(API+path,opts).then(function(r){if(!r.ok)throw new Error(path+': '+r.status);return r.json()})}
-function apiPreview(cmd){return fetch(API+'/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:cmd})}).then(function(r){return r.json()})}
+function apiFetch(path,opts){return timedFetch(API+path,opts).then(function(r){if(!r.ok)throw new Error(path+': '+r.status);return r.json()})}
+function apiPreview(cmd){return timedFetch(API+'/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:cmd})}).then(function(r){return r.json()})}
 
 var switchItems=[];
 for(var i=1;i<=15;i++)switchItems.push({id:'gs'+i,name:'\u5207\u6362'+i,command:'/gs change '+i,category:'switch'});
 
 // Job role colors
 var roleColors={0:'#22d3ee',1:'#4d7eff',2:'#ff5757',3:'#e07bf5',4:'#5dde8e'};
+var SWITCH_CAT='switch';
 
+// 给所有 fetch 加超时:插件离线时快速失败,而不是挂起等待
+function timedFetch(url,opts,ms){
+  var ctl=new AbortController();
+  var t=setTimeout(function(){ctl.abort()},ms||4000);
+  opts=opts||{};opts.signal=ctl.signal;
+  return fetch(url,opts).then(function(r){clearTimeout(t);return r},function(e){clearTimeout(t);throw e});
+}
+
+// seek 合并+串行:同一时刻只有一个请求在途,拖动中新位置覆盖旧位置(拖动器自身有150ms节流)
+var _seekBusy=false,_seekPending=null;
+function sendSeek(t){
+  var payload={time:Math.round(t*100)/100};
+  if(_seekBusy){_seekPending=payload;return}
+  _seekBusy=true;
+  apiFetch('/playback/seek',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+  .catch(function(){})
+  .then(function(){
+    _seekBusy=false;
+    if(_seekPending){var p=_seekPending;_seekPending=null;sendSeek(p.time)}
+  });
+}
+
+function restoreDraft(){
+  try{
+    var draft=JSON.parse(localStorage.getItem('choreo_draft')||'null');
+    if(draft&&draft.dancers&&draft.dancers.length){
+      store.dancers=draft.dancers;
+      store.globalLyrics=draft.globalLyrics||[];
+      store.dancerCount=draft.dancerCount||store.dancers.length;
+      store.showLyricMacro=!!draft.showLyricMacro;
+      var maxId=0;
+      store.dancers.forEach(function(d){['switchClips','actionClips','lyricClips'].forEach(function(k){(d[k]||[]).forEach(function(c){if(c.id>maxId)maxId=c.id})})});
+      (store.globalLyrics||[]).forEach(function(c){if(c.id>maxId)maxId=c.id});
+      store.nextClipId=maxId+1;
+    }
+  }catch(e){}
+}
 async function init(){
+  restoreDraft(); // 无论连接成败都先恢复本地草稿
   try{
     setLoadingText('加载中...');
     var h=await apiFetch('/health');
@@ -354,29 +439,54 @@ async function init(){
     }
     store.jobMap={};
     store.classJobs.forEach(function(j){store.jobMap[j.id]={name:j.name,abbr:j.abbreviation,command:'/job "'+j.name+'"',id:j.id,role:j.role}});
-    store.dancers=[makeDancer(0)];
+    // 草稿恢复已移到 init 开头 restoreDraft()
+    if(!store.dancers.length)store.dancers=[makeDancer(0)];
     saveHistory();
     document.getElementById('loading').classList.add('hidden');
     render();
-    showToast('宸插姞杞? '+store.emotes.length+' 鍔綔, '+store.actions.length+' 鎶鑳? '+store.classJobs.length+' 鑱屼笟');
+    showToast('\u5DF2\u52A0\u8F7D '+store.emotes.length+' \u52A8\u4F5C, '+store.actions.length+' \u6280\u80FD, '+store.classJobs.length+' \u804C\u4E1A');
+    // 实测动画时长：预览/拖动/播放过的动作会记录真实时长，用于显示与自动校正 clip 时长
+    refreshMeasured();
+    setInterval(refreshMeasured,5000);
   }catch(err){
     document.getElementById('loading').classList.add('hidden');
     showConnectionError(err.message);
   }
 }
 
-function showConnectionError(msg){
-  var root=document.getElementById('root');
+// 拉取插件实测的动画时长（预览/定格/播放时累积），并自动校正未被手动调过的 clip 时长
+function refreshMeasured(){
+  apiFetch('/actions/measured-durations').then(function(d){
+    if(!d||!d.durations)return;
+    var changed=false;
+    Object.keys(d.durations).forEach(function(k){
+      var v=parseFloat(d.durations[k]);if(!isFinite(v)||v<=0.05)return;
+      if(store.measuredDur[k]!==v){store.measuredDur[k]=v;changed=true}
+    });
+    if(!changed)return;
+    var fixed=false;
+    store.dancers.forEach(function(dd){['actionClips','switchClips'].forEach(function(k){
+      dd[k].forEach(function(c){
+        if(c.autoDur&&c.data&&c.data.command&&store.measuredDur[c.data.command]&&Math.abs(c.duration-store.measuredDur[c.data.command])>0.01){
+          c.duration=store.measuredDur[c.data.command];c.autoDur=false;fixed=true;
+        }
+      });
+    })});
+    if(fixed){updateTotalDuration();render()}
+  }).catch(function(){});
+}
+
+function showConnectionError(msg){  var root=document.getElementById('root');
   var d=document.createElement('div');
   d.style.cssText='display:flex;flex-direction:column;align-items:center;justify-content:center;height:100dvh;gap:14px;padding:20px;text-align:center';
-  var icon=document.createElement('div');icon.style.fontSize='40px';icon.textContent='馃攲';d.appendChild(icon);
-  var title=document.createElement('div');title.style.cssText='font-size:15px;font-weight:600;color:#7eb3ff';title.textContent='鏃犳硶杩炴帴 ChoreoHelper 鎻掍欢';d.appendChild(title);
+  var icon=document.createElement('div');icon.style.fontSize='40px';icon.textContent='\u{1F6E0}';d.appendChild(icon);
+  var title=document.createElement('div');title.style.cssText='font-size:15px;font-weight:600;color:#7eb3ff';title.textContent='\u65E0\u6CD5\u8FDE\u63A5 ChoreoHelper \u63D2\u4EF6';d.appendChild(title);
   var desc=document.createElement('div');desc.style.cssText='font-size:11px;color:#7a8597;max-width:380px';
-  desc.innerHTML='璇风淇濇父鎴忓凡鍚姩涓?ChoreoHelper 鎻掍欢宸插姞杞姐?br>API: http://localhost:48794<br>閿欒: '+msg;d.appendChild(desc);
+  desc.textContent='\u8BF7\u786E\u8BA4\u6E38\u620F\u5DF2\u542F\u52A8\u4E14 ChoreoHelper \u63D2\u4EF6\u5DF2\u52A0\u8F7D\u3002\nAPI: http://localhost:48794\n\u9519\u8BEF: '+msg;d.appendChild(desc);
   var bw=document.createElement('div');bw.style.cssText='display:flex;gap:8px;margin-top:6px';
-  var b1=document.createElement('button');b1.className='btn primary';b1.textContent='閲嶈瘯杩炴帴';
+  var b1=document.createElement('button');b1.className='btn primary';b1.textContent='\u91CD\u8BD5\u8FDE\u63A5';
   b1.onclick=function(){document.getElementById('loading').classList.remove('hidden');root.innerHTML='';init()};
-  var b2=document.createElement('button');b2.className='btn';b2.textContent='绂荤嚎妯紡';
+  var b2=document.createElement('button');b2.className='btn';b2.textContent='\u79BB\u7EBF\u6A21\u5F0F';
   b2.onclick=function(){store.connected=true;root.innerHTML='';render()};
   bw.appendChild(b1);bw.appendChild(b2);d.appendChild(bw);
   root.innerHTML='';root.appendChild(d);
@@ -422,38 +532,76 @@ function getFilteredActions(){
   return items.slice(0,300);
 }
 
-// Conflict check
-function hasConflict(di,tt,ns,nd,ex){
-  var d=store.dancers[di];if(!d)return false;
-  if(tt!=='switch'&&tt!=='action')return false;
+// Esc 退出宏面板全屏
+document.addEventListener('keydown',function(e){
+  if(e.key!=='Escape')return;
+  if(store.macroFullscreen){store.macroFullscreen=false;render();showToast('\u5DF2\u9000\u51FA\u5B8F\u5168\u5C4F')}
+});
+
+// Delete/Backspace 删除选中的 clip（输入框中不生效）
+document.addEventListener('keydown',function(e){
+  if(e.key!=='Delete'&&e.key!=='Backspace')return;
+  var t=e.target;
+  if(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable))return;
+  if(!store.selectedClip)return;
+  var nm=store.selectedClip.data&&store.selectedClip.data.name;
+  deleteClip(store.selectedClip.id);
+  showToast('\u5DF2\u5220\u9664: '+(nm||'clip'));
+  e.preventDefault();
+});
+
+// Conflict check：返回造成冲突的另一轨 clip 的最晚结束时刻（无冲突返回 0）
+function conflictEnd(di,tt,ns,nd,ex){
+  var d=store.dancers[di];if(!d)return 0;
+  if(tt!=='switch'&&tt!=='action')return 0;
   var ot=tt==='switch'?'actionClips':'switchClips';
-  var other=d[ot];var ne=ns+nd;
+  var other=d[ot];var ne=ns+nd;var ret=0;
   for(var i=0;i<other.length;i++){
-    if(other[i].id===ex)continue;
-    var c=other[i],cE=c.start+c.duration;
-    if(ns<cE-0.01&&ne>c.start+0.01)return true;
+    var c=other[i];if(c.id===ex)continue;
+    var cE=c.start+c.duration;
+    if(ns<cE-0.01&&ne>c.start+0.01&&cE>ret)ret=cE;
   }
-  return false;
+  return ret;
+}
+function hasConflict(di,tt,ns,nd,ex){return conflictEnd(di,tt,ns,nd,ex)>0}
+
+// 自动补齐规则：动作轨上两个 clip 之间有空隙时，自动延长前一个 clip 的时长补到下一个的开始
+// （新增/移动/删除/导入/宏解析后调用；手动拖右边缘缩短不回填——尊重显式设置的时长）
+function autoFillGaps(di){
+  var d=store.dancers[di];if(!d)return;
+  var arr=d.actionClips.slice().sort(function(a,b){return a.start-b.start});
+  for(var i=0;i<arr.length-1;i++){
+    var a=arr[i],b=arr[i+1];
+    if(b.start-(a.start+a.duration)>0.05){
+      a.duration=Math.round((b.start-a.start)*10)/10;
+      if(a.autoDur)a.autoDur=false; // 补齐是显式时长，不再被实测时长自动校正顶掉
+    }
+  }
 }
 
 // Add clip with auto job switch
 function addClip(di,tt,data,st){
   var d=store.dancers[di];if(!d)return false;
-  if(st===undefined){var d0=store.dancers[di];var arr0=d0[tt+'Clips'];var lastEnd0=0;arr0.forEach(function(c){var e0=c.start+c.duration;if(e0>lastEnd0)lastEnd0=e0;st=Math.round(st*2)/2});st=lastEnd0}
-  var dur=data.duration||(data.isLoop?3:3);
-  if(tt!=='lyric'&&hasConflict(di,tt,st,dur)){showToast('鏃堕棿鍐茬獊锛氬垏鎹拰鍔綔涓嶈兘閲嶅彔');return false}
+  if(st===undefined){var d0=store.dancers[di];var arr0=d0[tt+'Clips'];var lastEnd0=0;arr0.forEach(function(c){var e0=c.start+c.duration;if(e0>lastEnd0)lastEnd0=e0});st=lastEnd0}
+  var dur=data.duration||(data.isLoop?3:(store.measuredDur[data.command]||3));
+  var autoDur=!data.duration&&!data.isLoop; // 非循环动作：时长来自默认/实测值，拿到实测后自动校正
+  // 与另一轨（切换/动作）时间重叠时自动顺延到空位，不再报错
+  var guard=0,ce;
+  while(tt!=='lyric'&&(ce=conflictEnd(di,tt,st,dur))>0&&guard++<50){st=ce+0.05}
+  if(guard>0)showToast('已自动顺延到 '+st.toFixed(1)+'s（切换和动作轨不能重叠）');
   // Auto job switch
   if(tt==='action'&&data.jobName&&data.jobName!==d.currentJob){
     var ji=store.jobMap&&store.jobMap[data.jobId];
     if(ji){
       var hasSW=d.switchClips.some(function(c){return Math.abs(c.start-st)<0.1});
       if(!hasSW){
-        d.switchClips.push({id:store.nextClipId++,start:Math.max(0,st-0.5),duration:1,data:{name:'\u5207\u6362: '+data.jobName,command:ji.command,category:'鍒囨崲',isJobSwitch:true,jobName:data.jobName,jobId:data.jobId}});
+        d.switchClips.push({id:store.nextClipId++,start:Math.max(0,st-0.5),duration:1,data:{name:'\u5207\u6362: '+data.jobName,command:ji.command,category:'\u5207\u6362',isJobSwitch:true,jobName:data.jobName,jobId:data.jobId}});
         d.currentJob=data.jobName;
       }
     }
   }
-  d[tt+'Clips'].push({id:store.nextClipId++,start:Math.max(0,st),duration:dur,data:{id:data.id,name:data.name,command:data.command,category:data.category,jobName:data.jobName,jobId:data.jobId,jobAbbr:data.jobAbbr}});
+  d[tt+'Clips'].push({id:store.nextClipId++,start:Math.max(0,st),duration:dur,autoDur:autoDur,data:{id:data.id,name:data.name,command:data.command,category:data.category,jobName:data.jobName,jobId:data.jobId,jobAbbr:data.jobAbbr}});
+  if(tt==='action')autoFillGaps(di); // 前一个动作与新 clip 之间的空隙自动补齐
   saveHistory();updateTotalDuration();render();
   return true;
 }
@@ -476,6 +624,7 @@ function deleteClip(id){
   store.dancers.forEach(function(d){d.switchClips=d.switchClips.filter(function(c){return c.id!==id});d.actionClips=d.actionClips.filter(function(c){return c.id!==id});d.lyricClips=d.lyricClips.filter(function(c){return c.id!==id})});
   store.globalLyrics=store.globalLyrics.filter(function(c){return c.id!==id});
   if(store.selectedClip&&store.selectedClip.id===id)store.selectedClip=null;
+  store.dancers.forEach(function(d,i){autoFillGaps(i)}); // 删除后前一个动作补齐空隙
   saveHistory();updateTotalDuration();render();
 }
 
@@ -578,7 +727,7 @@ function generateMacro(di){
     });
   });
   var resultLines=['/echo \u7F16\u821E: '+d.name];
-  var maxLines=60;
+  var maxLines=14; // 游戏单宏槽 15 行：每 14 行动作分页 + /nextmacro 连续执行，留 1 行余量
   for(var i=0;i<macroLines.length;i++){
     resultLines.push(macroLines[i]);
     if((i+1)%maxLines===0&&i<macroLines.length-1){resultLines.push('/nextmacro')}
@@ -651,18 +800,37 @@ function parseMacroToClips(text,di){
   });
   d.switchClips=sw;d.actionClips=ac;d.lyricClips=ly;
   d.currentJob=sw.length>0?(sw[sw.length-1].data.jobName||null):null;
+  autoFillGaps(di); // 宏解析后动作间空隙补齐
   saveHistory();updateTotalDuration();render();
 }
 
+// 宏编辑光标恢复:render() 全量重建 textarea 时会吞光标,重绘后若文本一致则恢复
+var macroCaretRestore=null;
+
 // Playback
 var playRAF=null,playStart=0,playOffset=0;
+// 后台标签页 RAF 被节流:切到游戏窗口时播放头停走,回来跳变 -> 用 visibilitychange 补偿
+var playLastVisTime=0;
+document.addEventListener('visibilitychange',function(){
+  if(document.hidden){
+    playLastVisTime=performance.now();
+  }else if(store.isPlaying&&playLastVisTime){
+    var gap=(performance.now()-playLastVisTime)/1000*store.speed;
+    playOffset+=gap; // 补偿后台流逝的时间,播放头与插件时间轴对齐
+    playStart=performance.now();
+    updatePlayhead();updateTimeDisplay();updatePlayOverlay();
+  }
+});
 function togglePlay(){
   if(store.isPlaying){
+    playToken++;
     store.isPlaying=false;if(playRAF)cancelAnimationFrame(playRAF);
-    apiFetch('/playback/stop',{method:'POST'});
+    apiFetch('/playback/stop',{method:'POST'}).catch(function(){});
     var ov=document.getElementById('playOverlay');if(ov)ov.style.display='none';
     render();
   }else{
+    // 播放前先解冻:退出定格预览,避免定格残留影响播放
+    apiFetch('/playback/freeze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:''})}).catch(function(){});
     // Build clip timeline for all dancers
     var allClips=[];
     store.dancers.forEach(function(d,di){
@@ -672,32 +840,44 @@ function togglePlay(){
     });
     store.globalLyrics.forEach(function(c){allClips.push({id:c.id,start:c.start,duration:c.duration,command:c.data.command||'',type:'lyric',name:c.data.name||''})});
     allClips.sort(function(a,b){return a.start-b.start});
-    // Send to plugin and start playback
+    // Send to plugin and start playback (await result before UI state: 防止 start 失败但 UI 显示播放中)
     console.log('Sending clips:',JSON.stringify(allClips));
-    fetch('http://localhost:48794/playback/start',{
+    apiFetch('/playback/start',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({clips:allClips,fromTime:store.currentTime,speed:store.speed})
-    }).then(function(r){return r.json()}).then(function(d){
+    }).then(function(d){
       console.log('Playback started:',d);
       console.log('Clip details:', allClips.map(function(c){return {id:c.id,start:c.start,cmd:c.command,type:c.type,name:c.name}}));
-    }).catch(function(e){console.error('Playback start error:',e); console.log('Sent body:',JSON.stringify(allClips));});
-    store.isPlaying=true;playStart=performance.now();playOffset=store.currentTime;playLoop();
-    var ov=document.getElementById('playOverlay');if(ov)ov.style.display='block';
-    if(store.isPlaying)updatePlayOverlay();
-    render();
+      var tk=++playToken;
+      store.isPlaying=true;playStart=performance.now();playOffset=store.currentTime;
+      var ov=document.getElementById('playOverlay');if(ov)ov.style.display='block';
+      if(store.isPlaying)updatePlayOverlay();
+      render();
+      playLoop(tk);
+    }).catch(function(e){
+      console.error('Playback start error:',e);
+      store.isPlaying=false;
+      render();
+      showToast('\u64AD\u653E\u542F\u52A8\u5931\u8D25: '+ (e&&e.message?e.message:'\u8FDE\u63A5\u5931\u8D25'));
+    });
   }
 }
-function playLoop(){
-  if(!store.isPlaying)return;
+function playLoop(tk){
+  if(!store.isPlaying||tk!==playToken)return; // 过期调用直接退出(防 stop/start 乱序)
   var e=(performance.now()-playStart)/1000*store.speed;
   store.currentTime=playOffset+e;
-  if(store.currentTime>=store.totalDuration){store.currentTime=store.totalDuration;store.isPlaying=false;render();return}
+  if(store.currentTime>=store.totalDuration){
+    store.currentTime=store.totalDuration;store.isPlaying=false;render();
+    apiFetch('/playback/stop',{method:'POST'}).catch(function(){});
+    var ov=document.getElementById('playOverlay');if(ov)ov.style.display='none';return;
+  }
   updatePlayhead();updateTimeDisplay();
   updatePlayOverlay();
-  playRAF=requestAnimationFrame(playLoop);
+  playRAF=requestAnimationFrame(function(){playLoop(tk)});
 }
-function stopPlay(){store.isPlaying=false;if(playRAF)cancelAnimationFrame(playRAF);store.currentTime=0;apiFetch('/playback/stop',{method:'POST'});var ov=document.getElementById('playOverlay');if(ov)ov.style.display='none';render()}
+var playToken=0; // 播放令牌:防止 stop/start 乱序,只接受最新一次操作
+function stopPlay(){playToken++;store.isPlaying=false;if(playRAF)cancelAnimationFrame(playRAF);store.currentTime=0;apiFetch('/playback/stop',{method:'POST'}).catch(function(){});var ov=document.getElementById('playOverlay');if(ov)ov.style.display='none';render()}
 function updatePlayOverlay(){
   var ov=document.getElementById('playOverlay');if(!ov)return;
   var t=store.currentTime;
@@ -715,7 +895,9 @@ function updatePlayOverlay(){
     items.forEach(function(it){
       var cls=it.type==='action'?'po-action':it.type==='lyric'?'po-lyric':'po-switch';
       var icon=it.type==='action'?'\u{1F3B6}':it.type==='lyric'?'\u{1F4AC}':'\u{1F504}';
-      html+='<div class=\"po-item '+cls+'\"><span class=\"po-dancer\">'+it.dancer+'</span><span class=\"po-icon\">'+icon+'</span><span class=\"po-name\">'+it.clip.data.name+'</span></div>';
+      var nm=it.clip.data.name||'';nm=nm.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      var dn=String(it.dancer).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      html+='<div class=\"po-item '+cls+'\"><span class=\"po-dancer\">'+dn+'</span><span class=\"po-icon\">'+icon+'</span><span class=\"po-name\">'+nm+'</span></div>';
     });
   }
   ov.innerHTML=html;
@@ -729,18 +911,45 @@ function exportProject(){
   var b=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
   var u=URL.createObjectURL(b);var a=document.createElement('a');a.href=u;a.download='choreo_'+Date.now()+'.json';a.click();URL.revokeObjectURL(u);showToast('\u5DF2\u5BFC\u51FA');
 }
+// 导出所有舞者的宏文本为 .txt（含分页，可直接复制进游戏）
+function exportMacroTxt(){
+  var out=[];
+  store.dancers.forEach(function(d,di){
+    var lines=generateMacro(di);
+    out.push('===== '+d.name+' =====');
+    // 与界面一致：按页分块，页间空行分隔（/nextmacro 保留在页内）
+    var page=[];
+    lines.forEach(function(l){
+      if(l==='/nextmacro'){page.push(l);out.push(page.join('\n'));page=[];out.push('')}
+      else page.push(l)
+    });
+    if(page.length)out.push(page.join('\n'));
+    out.push('');
+  });
+  if(store.globalLyrics.length){out.push('===== \u5168\u5C40\u6B4C\u8BCD =====');out.push(store.globalLyrics.map(function(c){return (c.start).toFixed(1)+'s  '+(c.data.name||'')}).join('\n'))}
+  var b=new Blob([out.join('\n')],{type:'text/plain;charset=utf-8'});
+  var u=URL.createObjectURL(b);var a=document.createElement('a');a.href=u;a.download='choreo_macro_'+Date.now()+'.txt';a.click();URL.revokeObjectURL(u);showToast('\u5B8F\u5DF2\u5BFC\u51FA .txt');
+}
 function importProject(data){
   store.dancers=(data.dancers||[]).map(function(d,i){return{id:i,name:d.name||('\u821E\u8005 '+(i+1)),color:d.color||dancerColors[i%3],switchClips:(d.switchClips||[]).map(function(c){c.id=store.nextClipId++;return c}),actionClips:(d.actionClips||d.clips||[]).map(function(c){c.id=store.nextClipId++;return c}),lyricClips:(d.lyricClips||[]).map(function(c){c.id=store.nextClipId++;return c}),currentJob:null,collapsed:false,laneScale:1}});
   store.globalLyrics=(data.globalLyrics||[]).map(function(c){c.id=store.nextClipId++;return c});
   store.showLyricMacro=data.showLyricMacro||false;
   store.dancerCount=store.dancers.length;
+  store.dancers.forEach(function(d,i){autoFillGaps(i)}); // 导入后动作间空隙补齐
   saveHistory();updateTotalDuration();render();showToast('\u5DF2\u5BFC\u5165');
 }
 
 // === RENDER ===
+var detachMacroTa=null;
 function render(){
   if(!store.connected)return;
   var root=document.getElementById('root');
+  // 宏编辑中重建 DOM 会丢光标/撤销栈:先把焦点里的 textarea 摘下来,重建后复用
+  var cur=document.activeElement;
+  if(cur&&cur.classList&&cur.classList.contains('macro-tx')){
+    detachMacroTa={node:cur,di:store.activeMacroTab,page:cur._pi,scroll:cur.scrollTop};
+    cur.parentNode.removeChild(cur);
+  }
   root.innerHTML='';
   root.appendChild(renderToolbar());
   var ws=el('div','workspace');
@@ -753,6 +962,19 @@ function render(){
   if(!store.isPlaying)ov.style.display='none';
   root.appendChild(ov);
   renderRuler();updatePlayhead();updateTimeDisplay();
+  // 复用标记未消费(如切换了宏 tab)则丢弃
+  if(detachMacroTa)detachMacroTa=null;
+  // 宏编辑后重绘:文本未变则恢复光标,否则丢弃标记（按页定位对应文本框）
+  if(macroCaretRestore){
+    var mts=document.querySelectorAll('.macro-tx'),mta=null;
+    mts.forEach(function(t){if(t._pi===macroCaretRestore.page)mta=t});
+    if(mta&&mta.value===macroCaretRestore.text){
+      var p=Math.min(macroCaretRestore.pos,mta.value.length);
+      mta.setSelectionRange(p,p);
+      mta.focus();
+    }
+    macroCaretRestore=null;
+  }
 }
 
 function renderToolbar(){
@@ -766,7 +988,7 @@ function renderToolbar(){
   var td=el('span','time-disp');td.id='timeDisplay';td.textContent=fmtTime(store.currentTime);tb.appendChild(td);
   var sc=el('div','ctrl');sc.appendChild(el('label','','\u901F\u5EA6'));
   var sl=document.createElement('input');sl.type='range';sl.min='0.25';sl.max='2';sl.step='0.25';sl.value=store.speed;
-  sl.onchange=function(e){store.speed=parseFloat(e.target.value)};sc.appendChild(sl);
+  sl.onchange=function(e){var ns=parseFloat(e.target.value);if(store.isPlaying){var e2=(performance.now()-playStart)/1000*store.speed;playOffset=playOffset+e2;playStart=performance.now()}store.speed=ns};sc.appendChild(sl);
   sc.appendChild(el('span','',store.speed.toFixed(2)+'\u00D7'));tb.appendChild(sc);
   var dc=el('div','ctrl');dc.appendChild(el('label','','\u821E\u8005'));
   var dcg=el('div','dancer-sel');
@@ -780,6 +1002,7 @@ function renderToolbar(){
   tb.appendChild(el('div','spacer'));
   var bl=el('button','btn','\u{1F3B5} \u6B4C\u8BCD');bl.onclick=function(){showLyricsModal()};tb.appendChild(bl);
   var be=el('button','btn','\u5BFC\u51FA');be.onclick=exportProject;tb.appendChild(be);
+  var bt=el('button','btn','\u5B8FTXT');bt.title='\u5BFC\u51FA\u6240\u6709\u821E\u8005\u7684\u5B8F\u6587\u672C\u4E3A .txt \u6587\u4EF6';bt.onclick=exportMacroTxt;tb.appendChild(bt);
   var bi=el('button','btn','\u5BFC\u5165');bi.onclick=function(){document.getElementById('fileInput').click()};tb.appendChild(bi);
   var fi=document.createElement('input');fi.type='file';fi.id='fileInput';fi.accept='.json';fi.style.display='none';
   fi.onchange=function(e){var f=e.target.files[0];if(!f)return;var r=new FileReader();r.onload=function(ev){try{importProject(JSON.parse(ev.target.result))}catch(err){showToast('\u5BFC\u5165\u5931\u8D25')}};r.readAsText(f);e.target.value=''};
@@ -843,6 +1066,7 @@ function renderActionList(){
   var cols=el('div','act-cols');
   items.forEach(function(item){
     var ai=el('div','act-item');ai.draggable=true;
+    ai.title=item.name+(item.jobAbbr?' ('+item.jobAbbr+')':'');
     ai.setAttribute('data-cat',item.category||'');
     ai.ondragstart=function(e){e.dataTransfer.setData('text/plain',JSON.stringify({data:item,fromSidebar:true}));e.currentTarget.classList.add('dragging')};
     ai.ondragend=function(e){e.currentTarget.classList.remove('dragging')};
@@ -862,6 +1086,10 @@ function renderActionList(){
       ai.appendChild(el('div','ai-loop','\u221E \u5FAA\u73AF'));
     } else if(item.duration){
       ai.appendChild(el('div','ai-loop',(Math.round(item.duration*10)/10)+'s'));
+    } else {
+      // 非循环动作：显示实测真实时长（预览/播放过才有），否则标注待测
+      var md=store.measuredDur[item.command];
+      ai.appendChild(el('div','ai-loop',md?((Math.round(md*10)/10)+'s'):'\u975E\u5FAA\u73AF\u00B7\u70B9\u9884\u89C8\u6D4B\u65F6\u957F'));
     }
     if(item.jobAbbr){
       ai.appendChild(el('div','ai-job',item.jobAbbr));
@@ -891,6 +1119,22 @@ function renderTimelineArea(){
   }
   ta.appendChild(tr);
   var wrap=el('div','tl-wrap');wrap.id='timelineWrap';
+  // Ctrl+滚轮：缩放时间轴密度（pps = 每秒像素）
+  wrap.addEventListener('wheel',function(e){
+    if(!e.ctrlKey)return;
+    e.preventDefault();
+    var old=store.pps;
+    store.pps=Math.max(10,Math.min(240,old*(e.deltaY<0?1.15:1/1.15)));
+    if(store.pps===old)return;
+    // 以鼠标位置为锚点缩放：保持鼠标下的时间点不动
+    var r=wrap.getBoundingClientRect();
+    var mx=e.clientX-r.left+wrap.scrollLeft;
+    var tAt=(mx-LABEL_W)/old;
+    render();renderRuler();
+    wrap.scrollLeft=LABEL_W+tAt*store.pps-(e.clientX-r.left);
+    var br=document.getElementById('bottomRuler');if(br)br.scrollLeft=wrap.scrollLeft;
+    showToast('缩放: '+Math.round(store.pps)+' px/s');
+  },{passive:false});
   // Click on empty area to move playhead
   wrap.onclick=function(e){
     if(e.target.classList.contains('lane-body')||e.target.classList.contains('tl-canvas')||e.target.classList.contains('ruler')||e.target.classList.contains('bottom-ruler')){
@@ -924,9 +1168,17 @@ function renderTimelineArea(){
   ta.appendChild(wrap);
   // Bottom draggable timeline ruler
   var br=el('div','bottom-ruler');br.id='bottomRuler';
-  br.style.cssText='height:28px;overflow-x:hidden;overflow-y:hidden;position:relative;border-top:1px solid var(--border);background:var(--panel);flex-shrink:0;cursor:pointer';
+  br.style.cssText='height:64px;overflow-x:hidden;overflow-y:hidden;position:relative;border-top:1px solid var(--border);background:var(--panel);flex-shrink:0;cursor:pointer';
   br.innerHTML='<div id="bottomRulerInner" style="position:relative;height:100%;"></div>';
   br.onmousedown=function(e){
+    // 拖动前先停掉本地播放循环：否则 rAF 每帧把 currentTime 拉回去，拖动和播放头互相打架
+    if(store.isPlaying){
+      playToken++;store.isPlaying=false;
+      if(playRAF)cancelAnimationFrame(playRAF);
+      apiFetch('/playback/stop',{method:'POST'}).catch(function(){});
+      var ov0=document.getElementById('playOverlay');if(ov0)ov0.style.display='none';
+      render();
+    }
     var r=br.getBoundingClientRect();
     var x=e.clientX-r.left+br.scrollLeft;
     store.currentTime=Math.max(0,(x-LABEL_W)/store.pps);
@@ -940,7 +1192,7 @@ function renderTimelineArea(){
       store.currentTime=Math.max(0,(x2-LABEL_W)/store.pps);
       updatePlayhead();updateTimeDisplay();
       var now=Date.now();
-      if(now-lastSent>150){lastSent=now;sendSeek(store.currentTime);}
+      if(now-lastSent>50){lastSent=now;sendSeek(store.currentTime);}
     };
     var onUp=function(){
       sendSeek(store.currentTime);
@@ -1027,8 +1279,10 @@ function renderLane(dancer,di,trackType,labelText,lh){
         var r=e.currentTarget.getBoundingClientRect();
         var x=e.clientX-r.left;
         var st=x/store.pps;
-        if(trackType==='switch'&&data.data.category!=='\u5207\u6362'){showToast('\u5207\u6362\u8F68\u9053\u53EA\u80FD\u653E\u5207\u6362\u7C7B');return}
+        if(trackType==='switch'&&data.data.category!==SWITCH_CAT){showToast('\u5207\u6362\u8F68\u9053\u53EA\u80FD\u653E\u5207\u6362\u7C7B');return}
         addClip(di,trackType,data.data,st);
+        // 松手即退出定格预览(若拖动期间停留在定格中)
+        apiFetch('/playback/freeze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:''})}).catch(function(){})
       }
     }catch(err){}
   };
@@ -1134,18 +1388,18 @@ function dragClip(e,clip,di,tt,type,val){
         ns=snapTime(ns,clip,di,tt,type);
         ns=Math.round(ns*2)/2;
         if(ns===clip.start)return;
-        clip.start=ns;clip.duration=end-ns;
+        clip.start=ns;clip.duration=end-ns;clip.autoDur=false;
       }else{
         var ne=Math.max(clip.start+0.5,val+dt);
         ne=snapTime(ne,clip,di,tt,type);
         ne=Math.round(ne*2)/2;
         if(ne===clip.start+clip.duration)return;
-        clip.duration=ne-clip.start;
+        clip.duration=ne-clip.start;clip.autoDur=false;
       }
       updateTotalDuration();render();
     });
   };
-  var onUp=function(){if(raf)cancelAnimationFrame(raf);saveHistory();document.removeEventListener('mousemove',onMove);document.removeEventListener('mouseup',onUp)};
+  var onUp=function(){if(raf)cancelAnimationFrame(raf);if(type!=='resize-right')autoFillGaps(di);saveHistory();document.removeEventListener('mousemove',onMove);document.removeEventListener('mouseup',onUp)};
   document.addEventListener('mousemove',onMove);document.addEventListener('mouseup',onUp);
 }
 
@@ -1158,7 +1412,7 @@ function showCtxMenu(x,y,clip,di,tt){
     mi=el('div','ctx-it'+(it.danger?' danger':''),it.label);
     mi.onclick=function(){
       if(it.act==='dup')duplicateClip(clip);
-      else if(it.act==='dur'){var v=prompt('\u65F6\u957F(\u79D2)',clip.duration.toFixed(1));if(v){var d=Math.max(0.5,parseFloat(v)||0.5);if(tt!=='lyric'&&di>=0&&hasConflict(di,tt,clip.start,d,clip.id)){showToast('\u51B2\u7A81');return}clip.duration=d;saveHistory();updateTotalDuration();render()}}
+      else if(it.act==='dur'){var v=prompt('\u65F6\u957F(\u79D2)',clip.duration.toFixed(1));if(v){var d=Math.max(0.5,parseFloat(v)||0.5);if(tt!=='lyric'&&di>=0&&hasConflict(di,tt,clip.start,d,clip.id)){showToast('\u51B2\u7A81');return}clip.duration=d;clip.autoDur=false;saveHistory();updateTotalDuration();render()}}
       else if(it.act==='preview')apiPreview(clip.data.command).then(function(r){showToast(r.status==='ok'?'\u9884\u89C8:'+clip.data.name:'\u5931\u8D25')}).catch(function(){showToast('\u5931\u8D25')});
       else if(it.act==='del')deleteClip(clip.id);
       m.classList.remove('show');
@@ -1186,7 +1440,7 @@ function renderRuler(){
     for(var t2=0;t2<=total;t2+=minor){
       var bt=el('div','r-tick'+(t2%major<0.01?' major':' minor'));
       bt.style.left=(LABEL_W+t2*pps)+'px';bt.style.height='100%';bri.appendChild(bt);
-      if(t2%major<0.01){var bl=el('div','r-lb',fmtDur(t2));bl.style.left=(LABEL_W+t2*pps)+'px';bl.style.bottom='14px';bri.appendChild(bl)}
+      if(t2%major<0.01){var bl=el('div','r-lb',fmtDur(t2));bl.style.left=(LABEL_W+t2*pps)+'px';bl.style.bottom='6px';bri.appendChild(bl)}
     }
     // Bottom playhead marker
     var bpm=el('div','');bpm.id='bottomPlayhead';
@@ -1196,7 +1450,33 @@ function renderRuler(){
 }
 
 function renderMacroPanel(){
-  var panel=el('div','macro-pnl'+(store.macroCollapsed?' collapsed':''));
+  var panel=el('div','macro-pnl'+(store.macroCollapsed?' collapsed':'')+(store.macroFullscreen?' fullscreen':''));
+  // 高度由 inline height 直接驱动：旧版内容高度+max-height 方案下面板只有 ~140px，
+  // 拖拽条改 maxHeight 视觉无效、全屏 max-height!important 也撑不开 —— 这就是"太低/全屏没反应"
+  var normH=function(){return store.macroHeight||Math.max(280,Math.round(window.innerHeight*0.38))};
+  var fsH=function(){return store.macroFsHeight||Math.round(window.innerHeight*0.86)};
+  var applyH=function(){
+    if(store.macroCollapsed)panel.style.height='26px';
+    else if(store.macroFullscreen)panel.style.height=fsH()+'px';
+    else panel.style.height=normH()+'px';
+  };
+  applyH();
+  // 拖拽条：上下拖调整宏面板高度（普通/全屏各自记忆）
+  var rz=el('div','macro-resize');rz.title='拖动调整宏面板高度';
+  rz.onmousedown=function(e){
+    e.preventDefault();e.stopPropagation();
+    rz.classList.add('dragging');
+    var sy=e.clientY,curH=panel.offsetHeight;
+    var minH=140,maxH=store.macroFullscreen?window.innerHeight-60:window.innerHeight-200;
+    var onMv=function(ev){
+      var nh=Math.max(minH,Math.min(maxH,curH+(sy-ev.clientY)));
+      panel.style.height=nh+'px';
+      if(store.macroFullscreen)store.macroFsHeight=nh;else store.macroHeight=nh;
+    };
+    var onUp=function(){rz.classList.remove('dragging');document.removeEventListener('mousemove',onMv);document.removeEventListener('mouseup',onUp)};
+    document.addEventListener('mousemove',onMv);document.addEventListener('mouseup',onUp);
+  };
+  panel.appendChild(rz);
   var hdr=el('div','macro-hdr');
   hdr.onclick=function(){store.macroCollapsed=!store.macroCollapsed;render()};
   hdr.appendChild(el('span','mp-ttl',store.macroCollapsed?'\u25B6 \u5B8F\u7F16\u8F91':'\u25BC \u5B8F\u7F16\u8F91'));
@@ -1206,21 +1486,58 @@ function renderMacroPanel(){
     t.onclick=function(e){e.stopPropagation();store.activeMacroTab=di;render()};tabs.appendChild(t);
   });
   hdr.appendChild(tabs);
+  var fs=el('button','btn',store.macroFullscreen?'\u25A0 \u9000\u51FA\u5168\u5C4F':'\u26F6 \u5168\u5C4F');fs.title='\u5B8F\u9762\u677F\u5168\u5C4F\u7F16\u8F91\uFF08Esc \u9000\u51FA\uFF09';
+  fs.onclick=function(e){e.stopPropagation();store.macroFullscreen=!store.macroFullscreen;render()};
+  hdr.appendChild(fs);
   hdr.appendChild(el('span','','(\u7F16\u8F91\u540E\u81EA\u52A8\u540C\u6B65, \u81EA\u52A8\u63D2\u5165\u804C\u4E1A\u5207\u6362'+(store.showLyricMacro?', \u542B\u539F\u6B4C\u8BCD':'')+')'));
   panel.appendChild(hdr);
   if(!store.macroCollapsed){
     var body=el('div','macro-body');
-    var ta=el('textarea','macro-tx');
-    ta.value=generateMacro(store.activeMacroTab).join('\n');
-    ta.placeholder='\u5B8F\u6587\u672C - \u7F16\u8F91\u540E\u81EA\u52A8\u540C\u6B65\u5230\u8F68\u9053';
-    var syncTimer=null;
-    ta.oninput=function(){
-      clearTimeout(syncTimer);
-      syncTimer=setTimeout(function(){
-        parseMacroToClips(ta.value,store.activeMacroTab);
-      },600);
-    };
-    body.appendChild(ta);panel.appendChild(body);
+    // 按 /nextmacro 把宏拆成多页，同屏分栏展示
+    var full=generateMacro(store.activeMacroTab);
+    var pages=[[]];
+    full.forEach(function(l){if(l==='/nextmacro'){pages.push([])}else{pages[pages.length-1].push(l)}});
+    var syncTimers={};
+    pages.forEach(function(pl,pi){
+      var pg=el('div','macro-page');
+      var ph=el('div','macro-page-hdr');
+      ph.appendChild(el('span','mph-tt','\u5B8F '+(pi+1)+'/'+pages.length+' \xB7 '+pl.length+' \u884C'));
+      var cp=el('button','btn','\u590D\u5236\u672C\u9875');cp.title='\u590D\u5236\u5230\u526A\u8D34\u677F\uFF0C\u76F4\u63A5\u8D34\u8FDB\u6E38\u620F\u5B8F';
+      cp.onclick=function(){
+        navigator.clipboard.writeText(pl.join('\n')).then(function(){showToast('\u5B8F '+(pi+1)+' \u5DF2\u590D\u5236')}).catch(function(){showToast('\u590D\u5236\u5931\u8D25')});
+      };
+      ph.appendChild(cp);
+      pg.appendChild(ph);
+      // 复用焦点中的 textarea（保留光标/撤销栈/未同步输入）
+      var ta=null;
+      if(detachMacroTa&&detachMacroTa.di===store.activeMacroTab&&detachMacroTa.page===pi&&detachMacroTa.node.parentNode===null){
+        ta=detachMacroTa.node;
+      }
+      if(!ta){
+        ta=el('textarea','macro-tx');
+        ta.value=pl.join('\n');
+        ta.placeholder='\u5B8F\u6587\u672C - \u7F16\u8F91\u540E\u81EA\u52A8\u540C\u6B65\u5230\u8F68\u9053';
+      }
+      ta._pi=pi;
+      ta.oninput=function(){
+        pages[pi]=ta.value.split('\n');
+        macroCaretRestore={di:store.activeMacroTab,page:pi,pos:ta.selectionStart,text:ta.value};
+        clearTimeout(syncTimers[pi]);
+        syncTimers[pi]=setTimeout(function(){
+          var joined=[];
+          pages.forEach(function(p,pp){if(pp>0)joined.push('/nextmacro');joined=joined.concat(p)});
+          parseMacroToClips(joined.join('\n'),store.activeMacroTab);
+        },600);
+      };
+      pg.appendChild(ta);
+      body.appendChild(pg);
+      if(detachMacroTa&&detachMacroTa.node===ta){
+        try{ta.focus();var p2=Math.min(ta.selectionStart,ta.value.length);ta.setSelectionRange(p2,p2);}catch(e){}
+        ta.scrollTop=detachMacroTa.scroll;
+        detachMacroTa=null;
+      }
+    });
+    panel.appendChild(body);
   }
   return panel;
 }
