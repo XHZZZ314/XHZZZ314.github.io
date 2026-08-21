@@ -607,9 +607,10 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             _lastWrittenTime = -1f;
             return;
         }
-        // 直接通道：槽0时间轴 id 是动画身份。id 仍在期望集合（表内∪学习）内时，时长/指针的波动只是
-        // 过渡期读数失真 → 刷新基准即可，不触发重播；id 变了（游戏结束动作回待机）→ 自愈重播
-        if (DirectPending && Awaiting(_pendingCommand, CurrentSlot0Timeline()))
+        // 直接通道：槽0时间轴 id 是动画身份。强制通道下必须精确等于播放的 id（兜底模式用集合）。
+        // id 匹配时，时长/指针的波动只是过渡期读数失真 → 刷新基准即可，不触发重播；id 变了（游戏结束动作回待机）→ 自愈重播
+        var curSlot0 = CurrentSlot0Timeline();
+        if (DirectPending && (curSlot0 == _playedTimelineId || (_playedTimelineId == 0 && Awaiting(_pendingCommand, curSlot0))))
         {
             _attachDuration = probe.Duration;
             _attachBinding = probe.Binding;
@@ -692,37 +693,61 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
         if (DirectPending)
         {
             var slot0 = CurrentSlot0Timeline();
+
+            // 直接强制通道（我们自己指定了要播的时间轴）：验证必须**精确等于播放的 id**。
+            // 不用集合/时长宽泛匹配 —— 族集合里有别的命令共享的时间轴、时长相近的动作遍地都是，
+            // 宽泛匹配会把残留绑定/别人的动画当成自己的挂上 = 动作错误（实测高发）。
+            if (_playedTimelineId != 0)
+            {
+                if (slot0 == _playedTimelineId)
+                {
+                    // hka 控制槽换绑通常滞后 1-2 帧，等绑定指针切换（或 0.3s 短超时）再钉时间
+                    if (probe0.Binding != _preExecBinding || Now() - _lastExecTime > 0.3)
+                    {
+                        _attached = true;
+                        _attachDuration = d;
+                        _attachBinding = probe0.Binding;
+                        LearnTimeline(_pendingCommand, slot0); // 挂载成功即记忆（精确确认过的 id）
+                        KnownAttachDurations[_pendingCommand!] = d;
+                        _log.Information("Freeze attached direct (tl={id}, dur {d:F2}s)", slot0, d);
+                    }
+                    return;
+                }
+                // 未匹配：重试。前 3 次重播直接通道（候选限学习过的 + 主 id，不轮换全族 ——
+                // 族里含坐姿/卧姿等变体行的时间轴，播出即错误动作）；之后转 ExecuteEmote
+                // （让游戏自己选正确变体，验证切回集合模式）
+                if (Now() - _lastExecTime > 0.2 && _directAttempts < 8)
+                {
+                    _directAttempts++;
+                    if (_directAttempts <= 3)
+                    {
+                        _playIdx++; // 学习过的多个变体间轮换（都是精确确认过的）
+                        TryPlayTimelinePreferred(_pendingCommand ?? "");
+                    }
+                    else
+                    {
+                        _playedTimelineId = 0; // 切换到游戏选变体模式
+                        ExecuteEmoteDirect(_awaitEmoteId);
+                    }
+                    _lastExecTime = Now();
+                    _log.Information("Freeze direct retry {n} (played={p}, slot0={cur})", _directAttempts, _playedTimelineId != 0 ? _playedTimelineId : 0, slot0);
+                }
+                return;
+            }
+
+            // 兜底通道（ExecuteEmote/motion，游戏自己选变体）：集合验证 + 绑定切换才挂载
             if (Awaiting(_pendingCommand, slot0))
             {
-                // 时间轴已强制。hka 控制槽换绑通常滞后 1-2 帧，等绑定指针切换后再钉时间；
-                // 若 1s 内指针未变（游戏复用了同一控制），接受当前绑定 —— 槽0 id 已确认是我们强制的动画
                 if (probe0.Binding != _preExecBinding || Now() - _lastExecTime > 1.0)
                 {
                     _attached = true;
                     _attachDuration = d;
                     _attachBinding = probe0.Binding;
-                    LearnTimeline(_pendingCommand, slot0); // 挂载成功即记忆（含学习过的变体 id）
-                    KnownAttachDurations[_pendingCommand!] = d; // 变体时长基准
-                    // 通道偏好：经 motion 兜底阶段（attempts>=2）才挂上的命令，下次直接走 motion
+                    LearnTimeline(_pendingCommand, slot0);
                     if (_pendingCommand != null && _directAttempts >= 2)
                         MotionPreferred[_pendingCommand] = true;
-                    _log.Information("Freeze attached direct (tl={id}, dur {d:F2}s)", slot0, d);
+                    _log.Information("Freeze attached direct (fallback, tl={id}, dur {d:F2}s)", slot0, d);
                 }
-                return;
-            }
-            // 变体时长匹配：槽0 id 不在集合，但绑定时长与该命令已确认的挂载时长一致 ——
-            // 是同动画的另一变体（如 breakdance 的 7406/7407），学习并挂载（不然动画明明
-            // 在播却不钉时间 = 吞动作观感）。别的动作时长恰好相同的概率低，且后果可自愈。
-            if (slot0 != 0 && !_idleTimelines.Contains(slot0)
-                && _pendingCommand != null
-                && KnownAttachDurations.TryGetValue(_pendingCommand, out var kd)
-                && d > 0.05f && Math.Abs(d - kd) <= 0.15f)
-            {
-                _attached = true;
-                _attachDuration = d;
-                _attachBinding = probe0.Binding;
-                LearnTimeline(_pendingCommand, slot0);
-                _log.Information("Freeze attached direct by duration match (tl={id}, dur {d:F2}s)", slot0, d);
                 return;
             }
             // 学习路径 A（表情状态机确认）：EmoteId == 期望表情 且绑定确实换成新值且非待机 ——
@@ -1012,20 +1037,19 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
 
     /// <summary>
     /// 直接强制时间轴（Ktisis 同款主通道）：PlayActionTimeline 绑定指定 ActionTimeline ——
-    /// 无表情状态机参与（无拒绝/无忙窗口/motion 延迟）。候选序列：学习过的（最近成功的变体）优先、
-    /// 表内族时间轴补后；重试按 _playIdx 轮换（首选 id 被游戏拒绝时换下一个，不再死磕同一个 ——
-    /// 压测发现的失败模式：族变体如 jumpforjoy2/3/4 的首选 id 不被接受）。
+    /// 无表情状态机参与（无拒绝/无忙窗口/motion 延迟）。候选只取：学习过的 id（精确确认过
+    /// 的变体）+ 表内主 id（站立变体行首个）。**不轮换全族** —— 族集合含坐姿/卧姿等变体行
+    /// 的时间轴，PlayActionTimeline 播它们就是直接播出错误动作。
     /// </summary>
     private bool TryPlayTimelinePreferred(string command)
     {
         var cands = new List<ushort>();
         if (LearnedTimelines.TryGetValue(command, out var learned))
             lock (learned) cands.AddRange(learned);
-        foreach (var id in _awaitTimelineIds)
-            if (!cands.Contains(id)) cands.Add(id);
+        if (_awaitTimelineIds.Length > 0 && !cands.Contains(_awaitTimelineIds[0]))
+            cands.Add(_awaitTimelineIds[0]);
         if (cands.Count == 0) return false;
-        var idx = _playIdx % cands.Count; // 越界回绕（全试过后回到首选）
-        var playId = cands[idx];
+        var playId = cands[_playIdx % cands.Count];
         if (!TryGetLocalCharacter(out var chara)) return false;
         try
         {

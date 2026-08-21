@@ -10,7 +10,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
     <NoWarn>CS0436;CS8618;CS8601;CS8602;CS8603;CS8604;CS8625</NoWarn>
-    <Version>0.5.12.0</Version>
+    <Version>0.5.13.0</Version>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="Dalamud">
