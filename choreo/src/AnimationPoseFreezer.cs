@@ -66,6 +66,8 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
     private int _idleCandidateFrames;
     private ushort _chainCandidate;      // 链式学习（A3）的候选 id（连续稳定帧计数）
     private int _chainCandidateFrames;
+    private ushort _stCandidate;         // 状态转移学习（A'）的候选 id（连续稳定帧计数）
+    private int _stCandidateFrames;
     private bool _sawFamSinceExec;       // 本轮执行后表情状态机确认过族内 EmoteId（执行被接受）
     private bool _chainFromFam;          // 族内 EmoteId → 族外 EmoteId 的转移已发生（链式舞蹈签名）
     private ushort _motionSentSlot0 = ushort.MaxValue; // 每条 motion 命令发出时刻的槽0快照：
@@ -481,9 +483,12 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
         {
             // 钉住会话先解除（恢复原 Mode/BaseOverride）—— 后续命令要走正常状态机执行
             Unpin(blendToIdle: false);
-            // 解钉后循环变体（如舞蹈 loop）还在槽上无限循环，会拒收后续命令 —— 直接打断，
-            // 不等 motion 兜底轮（切换更快更稳）
-            TryBreakLingeringLoop(command);
+            // 解钉后循环变体（如舞蹈 loop）还在槽上无限循环，会拒收后续命令 —— 打断之。
+            // 但目标已有学习缓存时不打断：钉住路径自己就能压过循环（实测瞬时接管），
+            // bow 反而会和瞬时钉住竞争 —— bow 晚几百毫秒落地顶掉刚钉上的动画
+            // = 可用动作（如 /flamedance）偶发"不生效"的竞争根源
+            if (!(LearnedTimelines.TryGetValue(command, out var lrnB) && lrnB.Count > 0))
+                TryBreakLingeringLoop(command);
             SetAllControlSpeeds(1f); // 恢复全部槽速度，让新动作能正常绑定起播
             // 释放旧 emote 状态机：三层停表把旧动画钉得太彻底时，游戏的表情状态机
             // 在等旧动画"播完"才接受新表情（ExecuteEmote 和聊天命令都会被拒 ——
@@ -507,6 +512,8 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             _residualCandidateFrames = 0;
             _chainCandidate = 0;
             _chainCandidateFrames = 0;
+            _stCandidate = 0;
+            _stCandidateFrames = 0;
             _sawFamSinceExec = false;
             _chainFromFam = false;
             _motionResendAt = 0;
@@ -767,34 +774,22 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                 catch { }
             }
             SetAllControlSpeeds(0f);
-            // 循环动画取模：单轮时长 1.67s 的舞蹈在 clip 内 t=4s 应显示 4%1.67≈0.66s 的循环姿态；
-            // 直接钳制到单轮末尾会被游戏 wrap 重置 → 每帧漂移对抗（抽搐）
-            var target = _pendingTime;
-            if (_awaitIsLoop && _attachDuration > 0.05f && _pendingTime > _attachDuration)
-                target = _pendingTime % _attachDuration;
-            if (Math.Abs(target - _lastWrittenTime) > 0.001f)
+            // 时间写入统一（v0.5.20）：目标对活体绑定取模/钳制 —— 挂载瞬间的 _attachDuration
+            // 可能读自过渡期绑定（如待机 2.33s），用它取模会写出 2.8%2.33=0.47 这类错位时间；
+            // 且每帧都对账（写入+漂移校正合一，>30ms 即回写），游戏推着走也压得回来
+            var live = AccessMainControl(0, false);
+            if (live.Ok && live.Duration > 0.05f)
             {
-                if (AccessMainControl(target, true).Ok)
-                {
-                    _lastWrittenTime = target;
-                    _log.Information("Freeze hold: LocalTime={time}s", target);
-                }
-            }
-            else
-            {
-                // 漂移校正（第 3 层）：速度写入被游戏覆盖时，主槽 LocalTime 会偷偷前进；
-                // 偏离目标 >30ms 才回写，避免无意义的每帧对抗
-                var cur = AccessMainControl(0, false);
-                if (cur.Ok && cur.LocalTime >= 0 && Math.Abs(cur.LocalTime - target) > 0.03f)
+                var target = _pendingTime;
+                if (_awaitIsLoop && _pendingTime > live.Duration)
+                    target = _pendingTime % live.Duration;
+                if (Math.Abs(target - _lastWrittenTime) > 0.001f
+                    || (live.LocalTime >= 0 && Math.Abs(live.LocalTime - target) > 0.03f))
                 {
                     if (AccessMainControl(target, true).Ok)
                     {
                         _lastWrittenTime = target;
-                        if (Now() - _lastLog > 0.5)
-                        {
-                            _lastLog = Now();
-                            _log.Information("Freeze drift-correct: {c:F2} -> {t:F2}s (speed override detected)", cur.LocalTime, target);
-                        }
+                        _log.Information("Freeze hold: LocalTime={time}s (live dur {d:F2}s)", target, live.Duration);
                     }
                 }
             }
@@ -1000,6 +995,26 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                 _log.Information("Freeze learned timeline {id} for {cmd} (state-confirmed)", slot0, _pendingCommand);
                 return;
             }
+            // 学习路径 A'（状态转移确认，v0.5.20）：执行前 ResetEmoteState 清零 EmoteId，
+            // 之后 EmoteId 变为非 0 = 游戏接受了<b>某条</b>表情并绑定 —— 但解析出的变体行
+            // 可能不在 TextCommand 族内（/gcsalute 基础行解析到行 56，族匹配 A 永远失败）。
+            // 证据：EmoteId 0→非 0 转移（我们自己的执行被接受）+ 槽0 换成表外新值 + 稳定。
+            // 独占所有权兜底防跨命令污染。
+            if (CurrentEmoteId() != 0 && CanLearnTimeline(slot0) && OwnerUnknown(slot0))
+            {
+                if (slot0 == _stCandidate) _stCandidateFrames++;
+                else { _stCandidate = slot0; _stCandidateFrames = 1; }
+                if (_stCandidateFrames >= 3)
+                {
+                    _stCandidateFrames = 0;
+                    LearnTimeline(_pendingCommand, slot0);
+                    var (okS, durS, _, _) = AccessMainControl(0, false);
+                    if (okS && durS > 0.05f) KnownAttachDurations[_pendingCommand!] = durS;
+                    _log.Information("Freeze learned timeline {id} for {cmd} (emote-transition, row {e})", slot0, _pendingCommand, CurrentEmoteId());
+                    return;
+                }
+            }
+            else { _stCandidate = 0; _stCandidateFrames = 0; }
             // 学习路径 A3（链式确认，v0.5.19）：黄金之舞等链式舞蹈 —— 游戏把我们的表情（族内）
             // 链到族外 EmoteId 与表外时间轴（如 3770/3771，不在 Emote 表 [0..5]），A/B/C 的
             // 族匹配与变化检测全部够不着。签名：执行被接受过（见过族内）→ EmoteId 已链出族 +
