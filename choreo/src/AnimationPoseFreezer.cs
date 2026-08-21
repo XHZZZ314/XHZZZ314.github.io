@@ -66,6 +66,8 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
     private string _execChannel = "";   // 本轮执行通道（learned/emote/motion，日志用）
     private bool _facialOnly;           // 面部表情类：动画在面部骨架不绑主槽0 —— 执行确认即完成，不进主槽定格
     private double _execStartedAt;      // 本轮执行发起时刻（不随 retry 重置 —— 面部类判定需要跨越 retry 的稳定计时）
+    private bool _gaveUp;               // 有界放弃：命令已发完仍未挂载，静默等待（防无限兜底命令风暴）
+    private bool _lastWasLoop;          // 上个执行的是循环姿态型动作（坐地/躺椅等）—— 切换时需强制解除
 
     // 命令的执行通道偏好：ExecuteEmote 被游戏拒绝的表情（如 breakdance）由 motion 兜底
     // 挂载后记住 —— 之后直接走 motion 通道，省去每次 0.5-1s 的无效 ExecuteEmote 尝试
@@ -235,6 +237,18 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             _log.Error(ex, "Build emote map failed");
         }
         _emoteMap = map;
+        // 预热待机集合：此时通常无表情在播（map 在首次定格请求时构建，previewMode 尚未开启），
+        // 槽0上的值即主待机时间轴 —— 没有它，stance reset（循环姿态解除）永远不生效
+        try
+        {
+            if (!IsEmoting())
+            {
+                var s0 = CurrentSlot0Timeline();
+                if (s0 != 0 && _idleTimelines.Add(s0))
+                    _log.Information("Idle timeline pre-seeded: {id}", s0);
+            }
+        }
+        catch { }
         _log.Information("Emote map built: {n} commands", map.Count);
     }
 
@@ -427,6 +441,19 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             // 切换后仍要等满原表情时长的"忙窗口"）。EmoteId=0 是游戏 EndEmote 的状态终点，
             // 提前写 0 → 表情系统立即空闲，新表情马上可执行
             ClearEmoteId();
+            // 上个是循环姿态型动作（坐地/躺椅等，快进推不到尾、快进释放无效）→ 强制主待机解除，
+            // 否则游戏要求起立（1-2s），期间所有站姿命令被拒 = "很多动作出错"的根源。
+            // 对已自然结束的舞蹈（slot0 已回待机）此操作幂等无害。
+            if (_lastWasLoop && _idleTimelines.Count > 0 && TryGetLocalCharacter(out var stc))
+            {
+                try
+                {
+                    foreach (var idleId in _idleTimelines) { stc->Timeline.PlayActionTimeline(idleId); break; }
+                    _log.Information("Freeze: stance reset before new command (previous was loop-stance)");
+                }
+                catch { }
+            }
+            _lastWasLoop = false;
             _executor.Clear(); // 丢弃还没执行的旧聊天命令，防止旧动作插队
             _directAttempts = 0;
             _chatRetries = 0;
@@ -436,6 +463,7 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             _residualCandidateFrames = 0;
             _playIdx = 0;
             _facialOnly = false;
+            _gaveUp = false;
             var direct = TryResolveEmote(command, out var ids);
             if (direct)
             {
@@ -451,6 +479,7 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                 // 播错变体会通过家族集合验证（id 在集合内）但视觉上是错误动作
                 _playedTimelineId = 0;
                 _facialOnly = ids.IsFacial; // 表情分类：免定格流程（执行后即完成）
+                _lastWasLoop = ids.AnyLoop && !_facialOnly; // 循环姿态型：切换时需强制解除（记录给下次切换用）
                 var hasLearned = LearnedTimelines.TryGetValue(command, out var lrn) && lrn.Count > 0;
                 if (_facialOnly)
                 {
@@ -595,9 +624,20 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             return;
         }
 
-        // 面部表情类：动画在面部骨架、不绑主槽0 —— 不停表不写时间（写了会钉错待机/别的动画
-        // = 错误动作），让表情自然播完，只保持预览状态等下一个请求
-        if (_facialOnly) return;
+        // 面部/免钉定类：动画不在主槽（面部骨架/装备动作等）—— 不停表不写时间（写了会钉错
+        // 别的动画 = 错误动作），让动作自然播完。若之后主槽迟到了该命令的绑定（慢绑定的身体
+        // 动作），升级回正常定格
+        if (_facialOnly)
+        {
+            var fs = CurrentSlot0Timeline();
+            if (fs != 0 && !_idleTimelines.Contains(fs) && Awaiting(_pendingCommand, fs))
+            {
+                _facialOnly = false;
+                _lastWrittenTime = -1f;
+                _log.Information("Freeze no-pin upgraded to pinned (tl={id})", fs);
+            }
+            return;
+        }
 
         // 停表保持（三层防御）：游戏每帧可能重算各槽速度，单一控制槽的 0 会被覆盖，
         // 被覆盖后动画偷偷推进 → "停不住"；伴随槽继续播 → "抽搐"。每帧全量压 0 + 漂移校正兜底。
@@ -832,14 +872,13 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                 }
             }
             else { _learnCandidate = 0; _learnCandidateFrames = 0; }
-            // 还没挂上：0.3s 间隔重试。第 1 次重试 ExecuteEmote（游戏解析变体的一次机会）；
-            // 之后 motion 变体命令（同样游戏解析，~2s 但必对）。绝不播表内原始 id。
-            if (Now() - _lastExecTime > 0.3 && _directAttempts < 8)
+            // 有界重试（防命令风暴）：0.6s 间隔，最多 2 次重试 —— 第 1 次重发 ExecuteEmote、
+            // 第 2 次一条 motion。绝不播表内原始 id。**没有无限兜底** —— 曾每 0.35s 无限发
+            // motion，对不绑主槽的动作每条都真执行（~2s 后落地）→ 用户看到"没写过的动作"
+            if (Now() - _lastExecTime > 0.6 && _directAttempts < 2 && !_gaveUp)
             {
                 _directAttempts++;
-                var hasLearnedNow = _pendingCommand != null
-                    && LearnedTimelines.TryGetValue(_pendingCommand, out var lc) && lc.Count > 0;
-                if (_directAttempts <= 1 && !hasLearnedNow)
+                if (_directAttempts == 1)
                 {
                     _execChannel = "emote";
                     ExecuteEmoteDirect(_awaitEmoteId);
@@ -852,13 +891,13 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                 _lastExecTime = Now();
                 _log.Information("Freeze direct retry {n} via {ch} (slot0={cur})", _directAttempts, _execChannel, slot0);
             }
-            else if (_directAttempts >= 8 && Now() - _lastExecTime > 0.35 && _pendingCommand != null)
+            else if (_directAttempts >= 2 && Now() - _execStartedAt > 3.0 && !_gaveUp)
             {
-                // 持续兜底：低频重发 motion 变体直到挂上为止 ——
-                // 挂载验证（集合/学习/EmoteId）仍然把关，绝不盲挂
-                ExecuteMotionFallback();
-                _lastExecTime = Now();
-                _log.Information("Freeze sustained motion fallback ({cmd}, slot0={cur})", _pendingCommand, slot0);
+                // 有界放弃：命令已发完（初始 + 2 次重试）仍未挂载 —— 静默等待（不写时间不钉错），
+                // 下次请求会因 _needsReexec 重发。游戏侧命令可能仍在途并最终播放（可接受）。
+                _gaveUp = true;
+                _needsReexec = true;
+                _log.Information("Freeze: bounded give-up after retries, waiting quietly ({cmd})", _pendingCommand);
             }
             // 未挂载期间不写时间（绝不钉错姿势），每帧继续轻量轮询
             return;
@@ -1062,7 +1101,26 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
     }
 
     /// <summary>
-    /// 直接强制时间轴：候选只取学习缓存 —— 游戏自己绑定过的 id（种族/性别/职业正确变体）。
+    /// 解除姿态锁定：坐地/躺椅等持续姿态（EmoteLoop 模式）会拒绝后续站姿命令（游戏要起立，
+    /// 1-2s）—— 坐地后所有普通动作全部"迟到/失败"的根源。直接强制主待机时间轴立即解除。
+    /// </summary>
+    private void BreakStanceLock()
+    {
+        try
+        {
+            if (!TryGetLocalCharacter(out var chara)) return;
+            if (!chara->EmoteController.IsInEmoteLoop()) return;
+            foreach (var id in _idleTimelines)
+            {
+                chara->Timeline.PlayActionTimeline(id);
+                _log.Information("Freeze: broke stance lock via idle timeline {id}", id);
+                return;
+            }
+        }
+        catch (Exception ex) { _log.Error(ex, "BreakStanceLock failed"); }
+    }
+
+    /// <summary>直接强制时间轴：候选只取学习缓存 —— 游戏自己绑定过的 id（种族/性别/职业正确变体）。
     /// 绝不播表内原始 id（特殊类表情族含其他种族/性别的变体行，播错会通过集合验证但视觉错误）。
     /// </summary>
     private bool TryPlayTimelinePreferred(string command)
