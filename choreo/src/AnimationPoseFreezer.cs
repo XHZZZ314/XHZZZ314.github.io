@@ -54,14 +54,27 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
     // 污染后该表情永远验证"通过"并钉在待机上 = 吞动作；且越拖污染越多。
     private readonly HashSet<ushort> _idleTimelines = new();
     private double _lastIdleObserve;
+    private bool _wasEmoting;                  // 表情状态机下降沿检测（回归一致性待机采集）
+    private double _postEmoteCheckAt = -1;     // 表情结束后 1s 的回归采样时刻（-1=无任务）
+    private ushort _postEmoteBaseCandidate;    // 上次表情结束后的槽0 基线候选
+    private int _postEmoteBaseSources;         // 已见过回到候选基线的（不同）表情次数
     private ushort _learnCandidate;      // 学习路径 C 的候选 id（连续稳定帧计数）
     private int _learnCandidateFrames;
     private ushort _residualCandidate;   // 残留确认学习的候选 id（连续稳定帧计数）
     private int _residualCandidateFrames;
+    private ushort _idleCandidate;       // (已废弃 v0.5.19：待机采集改为表情回归一致性)
+    private int _idleCandidateFrames;
+    private ushort _chainCandidate;      // 链式学习（A3）的候选 id（连续稳定帧计数）
+    private int _chainCandidateFrames;
+    private bool _sawFamSinceExec;       // 本轮执行后表情状态机确认过族内 EmoteId（执行被接受）
+    private bool _chainFromFam;          // 族内 EmoteId → 族外 EmoteId 的转移已发生（链式舞蹈签名）
     private ushort _motionSentSlot0 = ushort.MaxValue; // 每条 motion 命令发出时刻的槽0快照：
     // motion 生效的证据是槽0变成"≠发出时的值"。等待期槽0=待机(3)且与快照相同 → 不是 motion 的产物，
     // 绝不能学（曾把待机 3 学进缓存 → 之后永远挂待机 = 吞动作）
     private ushort _playedTimelineId;   // 本轮通过 PlayActionTimeline 直接强制的时间轴 id（0=未用该通道）
+    private ushort _bowEmoteId;         // /bow 的表情行号（motion 循环打断器用 —— 表情通道可逐出循环调度器）
+    private double _motionResendAt;     // bow 打断后的 motion 补发时刻（0=无任务）—— bow 忙窗口会吞同帧命令
+    private int _motionResendCount;     // 本轮 motion 补发次数（≤2，防风暴）
     private int _playIdx;               // PlayTimeline 重试的候选轮换索引（失败换族内下一个 id）
     private string _execChannel = "";   // 本轮执行通道（learned/emote/motion，日志用）
     private bool _facialOnly;           // 面部表情类：动画在面部骨架不绑主槽0 —— 执行确认即完成，不进主槽定格
@@ -69,9 +82,27 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
     private bool _gaveUp;               // 有界放弃：命令已发完仍未挂载，静默等待（防无限兜底命令风暴）
     private bool _lastWasLoop;          // 上个执行的是循环姿态型动作（坐地/躺椅等）—— 切换时需强制解除
 
+    // ---- Brio 架构钉住（v0.5.18）：BaseOverride + AnimLock ----
+    // 挂载确认后不再"陪跑"表情状态机，而是接管基础槽：游戏每帧把 BaseOverride 应用到
+    // 基础槽（它自己的机制），表情结束计时器/待机/姿态切换都换不掉我们的时间轴 ——
+    // 根治"黄金之舞播到一半失效"（表情状态机按自身计时结束动作，与冻结无关）。
+    // AnimLock 模式 = 游戏施法/动作锁同款，状态机不再往基础槽塞别的动画。
+    private bool _hasPin;               // 钉住会话激活
+    private CharacterModes _pinOrigMode; // 钉住前的 Mode/ModeParam/BaseOverride（Brio OriginalBaseAnimation 同款）
+    private byte _pinOrigModeParam;
+    private ushort _pinOrigBaseOverride;
+    private ushort _pinnedTimelineId;   // 当前钉住的（已验证归属的）时间轴 id
+
     // 命令的执行通道偏好：ExecuteEmote 被游戏拒绝的表情（如 breakdance）由 motion 兜底
     // 挂载后记住 —— 之后直接走 motion 通道，省去每次 0.5-1s 的无效 ExecuteEmote 尝试
     private static readonly ConcurrentDictionary<string, bool> MotionPreferred = new();
+
+    // 游戏解析的变体行时间轴（v0.5.19 关键）：ResolveTargetedEmoteId 给出本角色实际执行的
+    // 变体行，其 ActionTimeline[0..5] 才是真实绑定 id —— /tremble 基础行 169 表内只有
+    // 6233/6232，解析行 91 的表内是 3123/3124。没有这个并集，集合验证永远失败 → 走 motion
+    // 兜底 → 循环变体残留槽位 → 阻塞后续 motion = 一整条死锁链的源头。
+    private static readonly ConcurrentDictionary<string, ushort[]> ResolvedTimelines = new();
+    private static readonly ConcurrentDictionary<string, ushort> ResolvedEmoteRow = new(); // 解析出的变体行号（EmoteId 匹配用）
 
     // 命令已确认的挂载动画时长：变体 id 不止一个（如 breakdance 有 7406/7407），学习只记住
     // 遇到过的 —— 其他变体验证不过（动画明明在播却不挂 = 吞动作观感）。时长是变体族的不变量，
@@ -116,6 +147,8 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
     private float _deferredTime;
     private bool _hasDeferred;
     private double _deferredSince;        // 当前延迟目标首次记下时刻（同目标停留过久=用户驻留刮擦，提前结算）
+    private double _lastPreviewActivity;  // 最近一次预览活动（seek/stop）—— 待机观察的静默窗口
+    private int _previewGen;              // 预览世代计数：Stop 后丢弃仍在队列里的旧 FreezeRequestCore（停止竞态）
 
     // 延迟测时长任务：预览/定格挂载后读取绑定动画真实时长，供前端展示正确 clip 时长
     private readonly List<(string Cmd, double Due)> _pendingMeasures = new();
@@ -150,11 +183,16 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
 
     private bool DirectPending => _awaitTimelineIds.Length > 0;
 
-    /// <summary>游戏当前表情是否属于我们请求的命令（族匹配：游戏实际可能执行任意变体行）。</summary>
+    /// <summary>游戏当前表情是否属于我们请求的命令（族匹配 ∪ 游戏解析的变体行：
+    /// /tremble 实际执行行 91 —— 不在 TextCommand 族内，由 ResolveTargetedEmoteId 链接）。</summary>
     private bool AwaitingEmote()
     {
         if (_awaitEmoteFamily.Length == 0) return false;
-        return Array.IndexOf(_awaitEmoteFamily, (ushort)CurrentEmoteId()) >= 0;
+        var cur = (ushort)CurrentEmoteId();
+        if (Array.IndexOf(_awaitEmoteFamily, cur) >= 0) return true;
+        return _pendingCommand != null
+            && ResolvedEmoteRow.TryGetValue(_pendingCommand, out var rr)
+            && rr == cur;
     }
 
     /// <summary>id 是否属于该命令的期望时间轴（Emote 表集合 ∪ 运行时学习集合）。</summary>
@@ -170,7 +208,11 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
         public readonly List<ushort> Rows = new();
         public readonly List<ushort> Tls = new();
         public bool Loop;
-        public bool Facial;
+        public int FacialRows;              // 表情分类的行数（按行统计，不按命令）
+        public int BodyRows;                // 有身体动画的行数
+        public bool Facial => FacialRows > 0 && BodyRows == 0; // 纯表情命令（全部行都是表情分类）
+        // v0.5.19：曾按"族内任一行是表情分类"判定 —— /wave 族里有一行表情变体，
+        // 整个命令被当纯表情走免钉定流程（"挥手中断"根源之一）。改为全行判定。
     }
 
     // ---- 命令 → 表情行ID + 全部时间轴行ID（首次使用时从 Emote 表构建，站立变体=同命令最小行号）----
@@ -205,13 +247,15 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                             agg[cmd] = g;
                         }
                         if (!g.Rows.Contains((ushort)e.RowId)) g.Rows.Add((ushort)e.RowId);
-                        // 表情分类：动画在面部骨架、不绑主槽0 —— 定格流程对其无效且有害
+                        // 表情分类按行统计：动画在面部骨架、不绑主槽0 —— 定格流程对其无效且有害
                         try
                         {
                             if (e.EmoteCategory.IsValid && e.EmoteCategory.Value.Name.ToString() == "\u8868\u60C5")
-                                g.Facial = true;
+                                g.FacialRows++;
+                            else
+                                g.BodyRows++;
                         }
-                        catch { }
+                        catch { g.BodyRows++; }
                         // ActionTimeline 只有 6 列（0-5），索引 6+ 会越界抛异常
                         for (var i = 0; i < 6; i++)
                         {
@@ -246,18 +290,10 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                 lock (set) set.Add(kv.Key);
             }
         TimelineOwners = owners;
-        // 预热待机集合：此时通常无表情在播（map 在首次定格请求时构建，previewMode 尚未开启），
-        // 槽0上的值即主待机时间轴 —— 没有它，stance reset（循环姿态解除）永远不生效
-        try
-        {
-            if (!IsEmoting())
-            {
-                var s0 = CurrentSlot0Timeline();
-                if (s0 != 0 && _idleTimelines.Add(s0))
-                    _log.Information("Idle timeline pre-seeded: {id}", s0);
-            }
-        }
-        catch { }
+        // v0.5.19：不再预填待机集合 —— 播放器上可能 linger 着上一轮 motion 的循环动画
+        // （无 EmoteId、Mode=Normal、表外），预填会把它学成"待机"，从此该动作的挂载/学习
+        // 全部被待机排除拒绝（/breakdance 的 3124 实测）。真待机由 ObserveIdleTimeline 的
+        // "两个不同表情结束后回到同一 id"一致性规则收集（见该方法）。
         _log.Information("Emote map built: {n} commands", map.Count);
     }
 
@@ -392,7 +428,8 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
     /// </summary>
     public void RequestFreezePreview(string command, float targetTime)
     {
-        _framework.RunOnFrameworkThread(() => FreezeRequestCore(command, targetTime));
+        var gen = _previewGen;
+        _framework.RunOnFrameworkThread(() => { if (gen == _previewGen) FreezeRequestCore(command, targetTime); });
     }
 
     /// <summary>
@@ -401,8 +438,11 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
     /// </summary>
     public void RequestStopPreview()
     {
+        var gen = _previewGen;
         _framework.RunOnFrameworkThread(() =>
         {
+            if (gen != _previewGen) return;
+            _lastPreviewActivity = Now();
             if (!_previewMode && !_hasDeferred) return;
             var now = Now();
             if (now - _lastRequestTime < 0.15)
@@ -420,6 +460,7 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
     private void FreezeRequestCore(string command, float targetTime, bool force = false)
     {
         var now = Now();
+        _lastPreviewActivity = now;
         var rapid = !force && now - _lastRequestTime < 0.15; // 拖动流中（不依赖 preview 状态：空隙位置会 StopPreview 打断链）
         _lastRequestTime = now;
 
@@ -438,6 +479,11 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
         // 同一动作连续拖动只拨时间、不重播也不重置挂载等待
         if (_lastCommand != command || _needsReexec)
         {
+            // 钉住会话先解除（恢复原 Mode/BaseOverride）—— 后续命令要走正常状态机执行
+            Unpin(blendToIdle: false);
+            // 解钉后循环变体（如舞蹈 loop）还在槽上无限循环，会拒收后续命令 —— 直接打断，
+            // 不等 motion 兜底轮（切换更快更稳）
+            TryBreakLingeringLoop(command);
             SetAllControlSpeeds(1f); // 恢复全部槽速度，让新动作能正常绑定起播
             // 释放旧 emote 状态机：三层停表把旧动画钉得太彻底时，游戏的表情状态机
             // 在等旧动画"播完"才接受新表情（ExecuteEmote 和聊天命令都会被拒 ——
@@ -446,22 +492,11 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             var preFast = AccessMainControl(0, false);
             if (preFast.Ok && preFast.Duration > 0.05f)
                 AccessMainControl(preFast.Duration, true);
-            // 清表情状态标记：游戏按自身计时决定何时接受下一个表情（快进动画骗不过它，
-            // 切换后仍要等满原表情时长的"忙窗口"）。EmoteId=0 是游戏 EndEmote 的状态终点，
-            // 提前写 0 → 表情系统立即空闲，新表情马上可执行
-            ClearEmoteId();
-            // 上个是循环姿态型动作（坐地/躺椅等，快进推不到尾、快进释放无效）→ 强制主待机解除，
-            // 否则游戏要求起立（1-2s），期间所有站姿命令被拒 = "很多动作出错"的根源。
-            // 对已自然结束的舞蹈（slot0 已回待机）此操作幂等无害。
-            if (_lastWasLoop && _idleTimelines.Count > 0 && TryGetLocalCharacter(out var stc))
-            {
-                try
-                {
-                    foreach (var idleId in _idleTimelines) { stc->Timeline.PlayActionTimeline(idleId); break; }
-                    _log.Information("Freeze: stance reset before new command (previous was loop-stance)");
-                }
-                catch { }
-            }
+            // 表情状态机完整解锁（v0.5.19）：EmoteId=0 + 退出 EmoteLoop/InPositionLoop 模式。
+            // 只清 EmoteId 不够 —— 舞蹈类把 Mode 留在循环姿态，ExecuteEmote 从此被游戏拒绝
+            // （要求先起立，而清了 EmoteId 后游戏的起立流程永远不会发生）= "跳过一次舞后
+            // 再拖任何动作都不生效"的死锁。Mode=Normal 即刻解锁。
+            ResetEmoteState();
             _lastWasLoop = false;
             _executor.Clear(); // 丢弃还没执行的旧聊天命令，防止旧动作插队
             _directAttempts = 0;
@@ -470,6 +505,12 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             _learnCandidateFrames = 0;
             _residualCandidate = 0;
             _residualCandidateFrames = 0;
+            _chainCandidate = 0;
+            _chainCandidateFrames = 0;
+            _sawFamSinceExec = false;
+            _chainFromFam = false;
+            _motionResendAt = 0;
+            _motionResendCount = 0;
             _playIdx = 0;
             _facialOnly = false;
             _gaveUp = false;
@@ -477,6 +518,47 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             if (direct)
             {
                 _awaitTimelineIds = ids.Timelines;
+                // 游戏自己的变体解析并集（v0.5.19）：解析行的表内时间轴才是本角色的真实 id。
+                // 每命令只解析一次（缓存）—— 同角色稳定。
+                if (!ResolvedTimelines.TryGetValue(command, out var resolvedTls))
+                {
+                    resolvedTls = Array.Empty<ushort>();
+                    try
+                    {
+                        if (TryGetLocalCharacter(out var rc))
+                        {
+                            var r = rc->ResolveTargetedEmoteId(ids.Emote, null);
+                            if (r != 0 && Array.IndexOf(ids.EmoteFamily, (ushort)r) < 0)
+                            {
+                                ResolvedEmoteRow[command] = (ushort)r;
+                                var sheet = _dataManager.GetExcelSheet<Emote>();
+                                var row = sheet.GetRow((uint)r);
+                                var list = new List<ushort>();
+                                for (var i = 0; i < 6; i++)
+                                {
+                                    try
+                                    {
+                                        var t = row.ActionTimeline[i];
+                                        if (t.IsValid) list.Add((ushort)t.RowId);
+                                    }
+                                    catch { }
+                                }
+                                resolvedTls = list.ToArray();
+                                if (resolvedTls.Length > 0)
+                                    _log.Information("Freeze: resolved variant row {r} for {cmd}, timelines [{t}]", r, command, string.Join(",", resolvedTls));
+                            }
+                        }
+                    }
+                    catch { }
+                    ResolvedTimelines[command] = resolvedTls;
+                }
+                if (resolvedTls.Length > 0)
+                {
+                    // 并集去重
+                    var union = new List<ushort>(_awaitTimelineIds);
+                    foreach (var t in resolvedTls) if (!union.Contains(t)) union.Add(t);
+                    _awaitTimelineIds = union.ToArray();
+                }
                 _awaitEmoteId = ids.Emote;
                 _awaitEmoteFamily = ids.EmoteFamily;
                 _awaitIsLoop = ids.AnyLoop;
@@ -497,8 +579,26 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                 }
                 else if (hasLearned)
                 {
-                    TryPlayTimelinePreferred(command);
-                    _execChannel = "learned";
+                    // 学习过的 id → 直接钉住（Brio 架构）：BaseOverride+AnimLock 立即接管基础槽，
+                    // 不再走表情状态机（无忙窗口、无结束计时器、无姿态锁）—— 回拖命中已学命令瞬时且确定
+                    var pinOk = false;
+                    if (LearnedTimelines.TryGetValue(command, out var lrn2))
+                    {
+                        lock (lrn2)
+                        {
+                            foreach (var id in lrn2)
+                            {
+                                if (!OwnerAllows(command, id) || id == 3 || _idleTimelines.Contains(id)) continue;
+                                if (TryPinTimeline(id, triggerBind: true)) { pinOk = true; break; }
+                            }
+                        }
+                    }
+                    if (pinOk) _execChannel = "pin-learned";
+                    else
+                    {
+                        TryPlayTimelinePreferred(command);
+                        _execChannel = "learned";
+                    }
                 }
                 else if (MotionPreferred.TryGetValue(command, out var mp) && mp)
                 {
@@ -546,6 +646,8 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
     /// </summary>
     public void StopPreview()
     {
+        _previewGen++; // 丢弃仍在 framework 队列里的旧 FreezeRequestCore（停止后被复活 = cleanup 竞态）
+        _lastPreviewActivity = Now();
         if (!_previewMode) return;
         _previewMode = false;
         _pendingCommand = null;
@@ -555,6 +657,7 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
         _awaitTimelineIds = Array.Empty<ushort>();
         _awaitEmoteId = 0;
         _awaitIsLoop = false;
+        Unpin(blendToIdle: true); // 解除钉住并混合回主待机（Brio ResetBaseOverride 同款收尾）
         SetAllControlSpeeds(1f); // 恢复全部槽速度与整体速度，角色回归自由动画
         _log.Information("Freeze preview stopped");
     }
@@ -653,6 +756,16 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
         // 拖动流中目标已过时且游戏已换绑（_needsReexec）时不写时间（会写进待机控制），等结算
         if (!(_hasDeferred && _needsReexec))
         {
+            // 钉住保持：BaseOverride 被游戏重算清掉就写回（等价 Brio hook 拦截，晚一帧落地）
+            if (_hasPin && TryGetLocalCharacter(out var pinChara))
+            {
+                try
+                {
+                    if (pinChara->Timeline.BaseOverride != _pinnedTimelineId)
+                        pinChara->Timeline.BaseOverride = _pinnedTimelineId;
+                }
+                catch { }
+            }
             SetAllControlSpeeds(0f);
             // 循环动画取模：单轮时长 1.67s 的舞蹈在 clip 内 t=4s 应显示 4%1.67≈0.66s 的循环姿态；
             // 直接钳制到单轮末尾会被游戏 wrap 重置 → 每帧漂移对抗（抽搐）
@@ -706,6 +819,24 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
         {
             _attachDuration = probe.Duration;
             _attachBinding = probe.Binding;
+            return;
+        }
+        // 钉住态下槽0竟然换出了集合（理论上 BaseOverride 已挡住 —— 防御性兜底）：原地重钉。
+        // 纯原生调用零命令，不可能形成命令风暴；不走重执行阶梯（阶梯会清钉住、发聊天命令）
+        if (_hasPin && _pinnedTimelineId != 0 && Now() - _lastExecTime > 0.5)
+        {
+            if (TryGetLocalCharacter(out var rpChara))
+            {
+                try
+                {
+                    rpChara->Timeline.BaseOverride = _pinnedTimelineId;
+                    rpChara->Timeline.PlayActionTimeline(_pinnedTimelineId);
+                    _attachBinding = probe.Binding;
+                    _lastExecTime = Now();
+                    _log.Warning("Freeze: pin lost (slot0={cur}), re-pinned {id}", curSlot0, _pinnedTimelineId);
+                }
+                catch { }
+            }
             return;
         }
         if ((_attachBinding != 0 && probe.Binding != _attachBinding)
@@ -772,6 +903,26 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
 
     private void AttachPhase()
     {
+        // bow 打断器的 motion 补发：bow 忙窗口吞掉了打断时的 motion 命令，此处重发。
+        // 等 bow 结束（EmoteId 归零）才发 —— 不满足就等下一帧；一次被吞（post-bow 忙窗）
+        // 还有一次机会（共 ≤2 次补发，防风暴）
+        if (_motionResendAt > 0 && Now() >= _motionResendAt)
+        {
+            if (Now() - _motionResendAt > 6.0)
+                _motionResendAt = 0;
+            else if (!_attached && !_hasDeferred && _pendingCommand != null && CurrentEmoteId() == 0)
+            {
+                _motionResendAt = 0;
+                _motionResendCount++;
+                if (_motionResendCount < 2)
+                    _motionResendAt = Now() + 3.0; // 第一次补发若落进 post-bow 忙窗被吞，3s 后再试一次
+                var cur3 = CurrentSlot0Timeline();
+                if (cur3 != 0) _motionSentSlot0 = cur3;
+                _lastExecTime = Now();
+                _executor.ExecuteCommand(_pendingCommand.Trim() + " motion");
+                _log.Information("Freeze: motion re-send #{n} after bow breaker ({cmd})", _motionResendCount, _pendingCommand);
+            }
+        }
         // 拖动流中：挂载目标已过时（延迟中了新命令），停止旧目标的重试/motion 兜底 ——
         // 否则兜底命令会和结算后的新动作交错执行，表现为"两个动作叠加"。
         // 但继续观察学习：上一目标的动画可能此时才生效（motion 固有 ~2s 延迟常落在拖动中），
@@ -785,6 +936,11 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
         if (DirectPending)
         {
             var slot0 = CurrentSlot0Timeline();
+
+            // 链式签名跟踪（A3 用）：族内 EmoteId → 族外 EmoteId 的转移 = 游戏把我们的表情
+            // 链到后续段落（黄金之舞 104→117）。被游戏拒绝的命令从未见过族内确认，不会误置。
+            if (AwaitingEmote()) _sawFamSinceExec = true;
+            else if (_sawFamSinceExec && CurrentEmoteId() != 0) _chainFromFam = true;
 
             // 面部表情类（表预测）：执行后 0.3s 即完成 —— 不等主槽绑定（等不到）、不重试
             // （角色已在做正确表情）、不学习（面部 timeline 学进去会被当主槽 id 播放 = 错误动作）
@@ -802,8 +958,9 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             // 集合验证（v0.5.11 已验证语义）：槽0 属于该命令（表内族 ∪ 学习过）且非待机 → 挂载。
             // 不能用"精确等于播放 id"—— 游戏有时会把强制的 id 规范化成它自己解析的变体
             // （v0.5.13 教训：精确匹配误判失败 → 不停重放 = 抽搐；重放 ladder 又闪过错误变体 = 动作错）。
-            // 待机排除防止把待机绑定当自己的动画钉住。
-            if (slot0 != 0 && !_idleTimelines.Contains(slot0) && Awaiting(_pendingCommand, slot0))
+            // 待机排除防止把待机绑定当自己的动画钉住；但表情状态机确认在播（族匹配）时放行 ——
+            // 命令自己的变体（/wave 的 663）播完会被游戏当基线留在槽上，不能因待机标记拒挂。
+            if (slot0 != 0 && (!_idleTimelines.Contains(slot0) || AwaitingEmote()) && Awaiting(_pendingCommand, slot0))
             {
                 // hka 控制槽换绑通常滞后 1-2 帧，等绑定指针切换（或 1s 短超时，游戏复用控制时）再钉时间
                 if (probe0.Binding != _preExecBinding || Now() - _lastExecTime > 1.0)
@@ -815,7 +972,10 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                     KnownAttachDurations[_pendingCommand!] = d;
                     if (_pendingCommand != null && _directAttempts >= 2)
                         MotionPreferred[_pendingCommand] = true;
-                    _log.Information("Freeze attached direct (tl={id}, dur {d:F2}s)", slot0, d);
+                    // 挂载即钉住（v0.5.18）：动画已绑好，只接管防换绑 —— 表情结束计时器
+                    // 从此无效（黄金之舞播到一半被状态机收走 = 半程失效的根因）
+                    TryPinTimeline(slot0, triggerBind: false);
+                    _log.Information("Freeze attached direct (tl={id}, dur {d:F2}s, pinned={p})", slot0, d, _hasPin);
                 }
                 return;
             }
@@ -840,6 +1000,26 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                 _log.Information("Freeze learned timeline {id} for {cmd} (state-confirmed)", slot0, _pendingCommand);
                 return;
             }
+            // 学习路径 A3（链式确认，v0.5.19）：黄金之舞等链式舞蹈 —— 游戏把我们的表情（族内）
+            // 链到族外 EmoteId 与表外时间轴（如 3770/3771，不在 Emote 表 [0..5]），A/B/C 的
+            // 族匹配与变化检测全部够不着。签名：执行被接受过（见过族内）→ EmoteId 已链出族 +
+            // 槽0 换成表外新值且稳定 ≥5 帧。被拒命令（从未见过族内）绝无可能触发 = 无污染。
+            // give-up 后仍每帧观察（链可能在数秒后才发生），零新增命令 = 无风暴。
+            if (CanLearnTimeline(slot0) && OwnerUnknown(slot0) && _chainFromFam)
+            {
+                if (slot0 == _chainCandidate) _chainCandidateFrames++;
+                else { _chainCandidate = slot0; _chainCandidateFrames = 1; }
+                if (_chainCandidateFrames >= 5)
+                {
+                    _chainCandidateFrames = 0;
+                    LearnTimeline(_pendingCommand, slot0);
+                    var (okC, durC, _, _) = AccessMainControl(0, false);
+                    if (okC && durC > 0.05f) KnownAttachDurations[_pendingCommand!] = durC;
+                    _log.Information("Freeze learned timeline {id} for {cmd} (chain-confirmed, emote now {e})", slot0, _pendingCommand, CurrentEmoteId());
+                    return;
+                }
+            }
+            else { _chainCandidate = 0; _chainCandidateFrames = 0; }
             // 学习路径 A2（残留确认）：EmoteId == 期望表情 且 slot0 == 执行前值（残留的就是目标 ——
             // 前一轮 motion 的产物还在播，"变化检测"全部失效的死锁场景）且稳定 ≥5 帧非待机 ——
             // 状态机明确说目标表情在播，槽上必是它的变体（过渡窗口的旧动画撑不过 5 帧稳定 +
@@ -867,8 +1047,14 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             }
             // 学习路径 C（motion 确认）：motion 变体命令播放的动画不设置 EmoteId（A/B 的
             // 状态机确认对它失效），其生效的直接证据是槽0 变成 ≠ motion 发出时刻快照的值 ——
-            // 等待期槽0=待机且与快照相同，绝不学习（曾把待机 3 学进缓存 → 吞动作）
-            if (CanLearnTimeline(slot0) && _directAttempts >= 4 && slot0 != _motionSentSlot0)
+            // 等待期槽0=待机且与快照相同，绝不学习（曾把待机 3 学进缓存 → 吞动作）。
+            // v0.5.19 加固：表外 id + motion 生效延迟窗（>2.2s，命令在途的过渡换绑不学；
+            // give-up 后仍生效 —— 迟到的 motion 落地也能被静默学走，零命令）
+            // + 排除"上个动作自然结束后的待机回绑"（实测：残留舞蹈 700 在 motion 在途时
+            // 播完 → 待机 3 回绑 ≠ 快照 → 被误当 motion 产物）。用表情回归基线候选当软待机
+            if (CanLearnTimeline(slot0) && OwnerUnknown(slot0) && slot0 != 3 && _directAttempts >= 2
+                && slot0 != _motionSentSlot0 && slot0 != _postEmoteBaseCandidate
+                && Now() - _lastExecTime > 2.2)
             {
                 if (slot0 == _learnCandidate) _learnCandidateFrames++;
                 else { _learnCandidate = slot0; _learnCandidateFrames = 1; }
@@ -881,6 +1067,9 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                 }
             }
             else { _learnCandidate = 0; _learnCandidateFrames = 0; }
+            // （C2 motion-残留已移除 v0.5.19：在途 motion 与 dedup 无法区分 —— 实测把待机 3
+            // 学给 /breakdance 并钉住。变化证据（C）对两种场景都健全：motion 落地 → 槽0 变 → C 学；
+            // motion 被去重（动画已在播）→ 用户看到的就是对的动画，放弃挂载即可，无副作用）
             // 有界重试（防命令风暴）：0.6s 间隔，最多 2 次重试 —— 第 1 次重发 ExecuteEmote、
             // 第 2 次一条 motion。绝不播表内原始 id。**没有无限兜底** —— 曾每 0.35s 无限发
             // motion，对不绑主槽的动作每条都真执行（~2s 后落地）→ 用户看到"没写过的动作"
@@ -973,13 +1162,140 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
         catch (Exception ex) { _log.Error(ex, "ClearEmoteId failed"); }
     }
 
+    /// <summary>
+    /// 表情状态机完整解锁（v0.5.19）：EmoteId=0 + 退出循环姿态模式。
+    /// 死锁根源：黄金之舞等舞蹈把 Mode 留在 EmoteLoop(3)/InPositionLoop(11)，此后
+    /// ExecuteEmote 被游戏拒绝（要求先起立/退出姿态 1-2s，且清了 EmoteId 后游戏永远等不到）
+    /// —— 表现为"跳过一次舞后再拖任何动作全部不生效"。Mode=Normal(1) 即刻解锁
+    /// （Ktisis 退出表情模式同款写法），必要时顺带强制主待机把序列器从旧循环绑定上拉下来。
+    /// </summary>
+    private void ResetEmoteState()
+    {
+        if (!TryGetLocalCharacter(out var chara)) return;
+        try
+        {
+            chara->EmoteController.EmoteId = 0;
+            var m = chara->Mode;
+            if (m == CharacterModes.EmoteLoop || m == CharacterModes.InPositionLoop)
+            {
+                // 必须走 SetMode 函数：裸写 Mode 字段会绕过游戏的模式切换记账，
+                // 之后表情系统静默拒绝一切新表情（实测 SetMode 一调立即恢复）
+                chara->SetMode(CharacterModes.Normal, 0);
+                foreach (var idleId in _idleTimelines)
+                {
+                    try { chara->Timeline.PlayActionTimeline(idleId); } catch { }
+                    break;
+                }
+                _log.Information("Freeze: exited loop mode {m} -> Normal (emote state unlocked)", (int)m);
+            }
+        }
+        catch (Exception ex) { _log.Error(ex, "ResetEmoteState failed"); }
+    }
+
+    /// <summary>
+    /// Brio 架构钉住：Mode=AnimLock + Timeline.BaseOverride=id（游戏自己的基础槽覆盖机制，
+    /// 每帧由游戏重新应用 —— 表情结束计时器/待机/姿态逻辑都无权换绑）。
+    /// triggerBind=true 时同时 PlayActionTimeline 让 Sequencer 立即绑定（当前槽上是别的动画时）；
+    /// false = 动画已绑好，只接管防换绑（避免无谓重绑清掉已拨好的时间）。
+    /// </summary>
+    private bool TryPinTimeline(ushort timelineId, bool triggerBind)
+    {
+        if (timelineId == 0) return false;
+        if (!TryGetLocalCharacter(out var chara)) return false;
+        try
+        {
+            if (!_hasPin)
+            {
+                _pinOrigMode = chara->Mode;
+                _pinOrigModeParam = chara->ModeParam;
+                _pinOrigBaseOverride = chara->Timeline.BaseOverride;
+            }
+            chara->SetMode(CharacterModes.AnimLock, 0);
+            chara->Timeline.BaseOverride = timelineId;
+            // 钉住即结束表情状态机：它的结束计时器再也不能中途收回动作（黄金之舞半程失效根因）
+            chara->EmoteController.EmoteId = 0;
+            if (triggerBind)
+                chara->Timeline.PlayActionTimeline(timelineId);
+            _pinnedTimelineId = timelineId;
+            _hasPin = true;
+            _log.Information("Freeze PIN: BaseOverride={id} mode=AnimLock (bind={bind})", timelineId, triggerBind);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _log.Error(ex, "TryPinTimeline failed (id={id})", timelineId);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 解除钉住：恢复钉住前的 Mode/ModeParam/BaseOverride（Brio ResetBaseOverride 同款）。
+    /// blendToIdle=true 时额外强制主待机时间轴（自然混合回站姿），用于完全退出预览。
+    /// </summary>
+    private void Unpin(bool blendToIdle)
+    {
+        if (!_hasPin) return;
+        _hasPin = false;
+        _pinnedTimelineId = 0;
+        if (!TryGetLocalCharacter(out var chara)) return;
+        try
+        {
+            // 钉住常发生在舞蹈中段（Mode=EmoteLoop/InPositionLoop 时刻）—— 原样恢复会把
+            // 循环姿态模式带回来，重新进入"ExecuteEmote 全被拒"的死锁。恢复目标消毒为 Normal。
+            var restore = _pinOrigMode;
+            if (restore == CharacterModes.EmoteLoop || restore == CharacterModes.InPositionLoop)
+                restore = CharacterModes.Normal;
+            // 必须走 SetMode 函数（v0.5.19 关键修复）：裸写 Mode 字段会绕过游戏的模式切换
+            // 记账 —— 之后 ExecuteEmote/聊天表情全部被静默拒绝（实测：钉住→裸写恢复→
+            // /bow 拒收 3 分钟，SetMode(Normal,0) 一调用立即恢复）
+            chara->SetMode(restore, (restore == _pinOrigMode) ? _pinOrigModeParam : (byte)0);
+            chara->Timeline.BaseOverride = _pinOrigBaseOverride;
+            if (blendToIdle)
+            {
+                foreach (var idleId in _idleTimelines)
+                {
+                    chara->Timeline.PlayActionTimeline(idleId);
+                    break;
+                }
+            }
+            _log.Information("Freeze UNPIN (blend={blend})", blendToIdle);
+        }
+        catch (Exception ex) { _log.Error(ex, "Unpin failed"); }
+    }
+
+    /// <summary>
+    /// 打断残留的 motion 循环变体（表外 id 在槽上无限循环不去）。游戏的 motion 通道对
+    /// "已有 motion 在播"去重/拒收，且部分表情命令也进不去 —— /breakdance 的循环占用
+    /// 槽位后，后续命令全部落空（实测 /tremble 5s+ 无绑定）。PlayActionTimeline 压不住
+    /// （调度器下轮又绑回），PlayTimeline(3) 实测直接崩游戏 —— 唯一实测有效的是走表情
+    /// 通道放一个良性一次性动作（/bow），表情系统接管基础槽后循环调度器被逐出。
+    /// </summary>
+    private void TryBreakLingeringLoop(string? forCommand)
+    {
+        try
+        {
+            var cur = CurrentSlot0Timeline();
+            if (cur == 0 || cur == 3 || cur == _postEmoteBaseCandidate || !OwnerUnknown(cur)) return;
+            if (forCommand != null && Awaiting(forCommand, cur)) return; // 就是我们目标的动画
+            if (_bowEmoteId == 0 && _emoteMap != null && _emoteMap.TryGetValue("/bow", out var bowIds))
+                _bowEmoteId = bowIds.Emote;
+            if (_bowEmoteId == 0) return;
+            ExecuteEmoteDirect(_bowEmoteId);
+            _log.Information("Freeze: broke lingering motion loop (tl={cur}) via bow emote", cur);
+        }
+        catch (Exception ex) { _log.Error(ex, "TryBreakLingeringLoop failed"); }
+    }
+
     /// <summary>motion 变体兜底：/xxx motion 不进表情状态机、无忙窗口（状态机被去重/阻塞时走它）。</summary>
     private void ExecuteMotionFallback()
     {
         if (string.IsNullOrEmpty(_pendingCommand)) return;
-        // 记录发出时刻槽0快照：生效证据=槽0变成≠快照的值（等待期槽0=待机且==快照，不是 motion 产物）
-        var cur = CurrentSlot0Timeline();
-        if (cur != 0) _motionSentSlot0 = cur;
+        // 先打断残留循环（bow）—— bow 的忙窗口会吞掉同帧发的 motion，1.6s 后由补发机制重发
+        TryBreakLingeringLoop(_pendingCommand);
+        _motionResendAt = Now() + 1.6;
+        // 快照在打断之后取：循环打断→新绑定后，motion 落地的"槽0 变成 ≠ 快照"证据才成立
+        var cur2 = CurrentSlot0Timeline();
+        if (cur2 != 0) _motionSentSlot0 = cur2;
         _executor.ExecuteCommand(_pendingCommand.Trim() + " motion");
     }
 
@@ -987,16 +1303,54 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
     private bool CanLearnTimeline(ushort slot0)
         => slot0 != 0 && slot0 != _preExecSlot0 && !_idleTimelines.Contains(slot0);
 
-    /// <summary>低频观察待机时间轴（预览未激活且无表情时槽0上的值）—— 用于学习排除。</summary>
+    /// <summary>低频观察待机时间轴（学习排除）。v0.5.19 彻底重做 —— 唯一可靠的"真待机"信号
+    /// 是回归一致性：两个<b>不同</b>的表情结束后 1s，槽0 回到同一个表外 id。
+    /// 时间式采样（"不播表情时槽上是什么"）不可用：motion 通道的循环变体（/breakdance 的
+    /// 3124）linger 在槽上同样满足"无 EmoteId + Mode=Normal + 稳定"，曾把真动作学成待机，
+    /// 从此该动作的挂载/学习全被待机排除拒绝。回归边沿只在真表情结束时刻触发，
+    /// motion 残留（从未进入表情状态机）永远不会被采集。</summary>
     private void ObserveIdleTimeline()
     {
-        if (Now() - _lastIdleObserve < 0.5) return;
-        _lastIdleObserve = Now();
-        if (_previewMode || _hasDeferred || IsEmoting()) return;
+        // 到期的回归采样先执行（下降沿守卫不能挡住已排定的采样）
+        if (_postEmoteCheckAt > 0 && Now() >= _postEmoteCheckAt)
+            SamplePostEmoteReturn();
+        bool emotingNow;
+        try { emotingNow = IsEmoting(); }
+        catch { return; }
+        if (emotingNow) { _wasEmoting = true; return; }
+        if (_wasEmoting)
+        {
+            _wasEmoting = false;
+            if (!_previewMode && !_hasDeferred)
+                _postEmoteCheckAt = Now() + 1.0; // 表情结束，1s 后采样回归基线
+        }
+    }
+
+    private void SamplePostEmoteReturn()
+    {
+        _postEmoteCheckAt = -1;
+        if (_hasDeferred || IsEmoting()) return;
+        if (_attached || _hasPin) return; // 我们钉住/挂载的动画不是回归基线；等待期（含预览中）可采样
+        // —— 等待期采样是关键：打断器放的 bow 结束回绑的待机，正好成为 C 路径的"软待机"排除项
+        EnsureEmoteMap();
+        if (!TryGetLocalCharacter(out var chara)) return;
+        try { if (chara->Mode != CharacterModes.Normal) return; }
+        catch { return; }
         var slot0 = CurrentSlot0Timeline();
         if (slot0 == 0 || _idleTimelines.Contains(slot0)) return;
-        _idleTimelines.Add(slot0);
-        _log.Information("Idle timeline observed: {id} (excluded from learning)", slot0);
+        if (TimelineOwners != null && TimelineOwners.ContainsKey(slot0)) return; // 表内 id 不是待机
+        if (slot0 == _postEmoteBaseCandidate && _postEmoteBaseSources >= 1)
+        {
+            // 两次（及以上）表情结束都回到同一表外 id —— 真待机
+            _idleTimelines.Add(slot0);
+            _log.Information("Idle timeline confirmed by post-emote return consistency: {id}", slot0);
+        }
+        else if (slot0 != _postEmoteBaseCandidate)
+        {
+            _postEmoteBaseCandidate = slot0;
+            _postEmoteBaseSources = 1;
+        }
+        else _postEmoteBaseSources++;
     }
 
     // 时间轴 → 拥有它的命令集合（表内权威归属）：跨命令学习污染防护 —— 压测实测 /mandervilledance
@@ -1011,16 +1365,40 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
         return owners.Contains(command);
     }
 
+    /// <summary>id 是否表外（调度器生成的链式变体，如黄金之舞的 3770/3771）。</summary>
+    private static bool OwnerUnknown(ushort timelineId)
+        => TimelineOwners == null || !TimelineOwners.ContainsKey(timelineId);
+
+    private static readonly object LearnLock = new(); // 学习的独占所有权校验（跨命令污染防线）
+
     private static void LearnTimeline(string? command, ushort timelineId)
     {
         if (string.IsNullOrEmpty(command) || timelineId == 0) return;
+        if (timelineId == 3) return; // 3 = 标准待机（Brio 同款常量）—— 永远不是动作，杜绝把待机学进缓存
         if (!OwnerAllows(command, timelineId))
         {
             // 表内归属别的命令 —— 拒学（跨命令污染是"特殊动作不生效/错误"的根源之一）
             return;
         }
-        var list = LearnedTimelines.GetOrAdd(command, _ => new List<ushort>());
-        lock (list) { if (!list.Contains(timelineId)) list.Add(timelineId); } // 有序：最近学习的在重试轮换中优先
+        // 独占所有权（v0.5.19）：一个时间轴 id 只属于一个命令。motion 命令有 2-5s 的游戏内
+        // 队列延迟 —— 上一轮在途的 motion 会在下一轮的等待期落地，按时间学习必然张冠李戴
+        // （实测 /breakdance 的变体 3123 被 /tremble 学走 = 拖到 tremble 播出霹雳舞）。
+        // 先学先得；表内归属（OwnerAllows）仍是最终权威。
+        lock (LearnLock)
+        {
+            foreach (var kv in LearnedTimelines)
+            {
+                lock (kv.Value)
+                {
+                    if (kv.Value.Contains(timelineId) && kv.Key != command)
+                    {
+                        return; // 已被别的命令学习 —— 拒绝
+                    }
+                }
+            }
+            var list = LearnedTimelines.GetOrAdd(command, _ => new List<ushort>());
+            lock (list) { if (!list.Contains(timelineId)) list.Add(timelineId); } // 有序：最近学习的在重试轮换中优先
+        }
     }
 
     /// <summary>延迟测量前的身份校验：延迟期间用户可能已拖到别的动作，防止把别人的时长记串（v0.5.6 修复）。</summary>
@@ -1171,9 +1549,110 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
         }
     }
 
-    /// <summary>调试端点数据：槽0时间轴/表情状态/绑定时长（诊断动画通道行为）。</summary>
-    public string GetDebugAnimState()
+    /// <summary>调试：命令的表情族行（分类+时间轴）与任意时间轴 id 的表内归属（诊断链式舞蹈）。</summary>
+    public string GetDebugEmoteFamily(string? command, ushort[] probeIds)
     {
+        try
+        {
+            EnsureEmoteMap();
+            var sheet = _dataManager.GetExcelSheet<Emote>();
+            object? family = null;
+            if (!string.IsNullOrEmpty(command) && _emoteMap != null && _emoteMap.TryGetValue(command, out var ids))
+            {
+                var rows = new List<object>();
+                foreach (var r in ids.EmoteFamily)
+                {
+                    var e = sheet.GetRow(r);
+                    var cat = ""; try { cat = e.EmoteCategory.IsValid ? e.EmoteCategory.Value.Name.ToString() : ""; } catch { }
+                    var tls = new List<ushort>();
+                    try { for (var i = 0; i < 6; i++) { var t = e.ActionTimeline[i]; if (t.IsValid) tls.Add((ushort)t.RowId); } } catch { }
+                    rows.Add(new { row = r, name = e.Name.ToString(), cat, timelines = tls });
+                }
+                family = new { emote = ids.Emote, anyLoop = ids.AnyLoop, facial = ids.IsFacial, rows };
+            }
+            var owners = new List<object>();
+            foreach (var id in probeIds)
+            {
+                string[] tbl = Array.Empty<string>();
+                if (TimelineOwners != null && TimelineOwners.TryGetValue(id, out var set))
+                { lock (set) tbl = set.ToArray(); }
+                string[] lrn = Array.Empty<string>();
+                foreach (var kv in LearnedTimelines)
+                { lock (kv.Value) if (kv.Value.Contains(id)) { lrn = lrn.Append(kv.Key).ToArray(); } }
+                owners.Add(new { id, table = tbl, learnedBy = lrn });
+            }
+            var st = System.Text.Json.JsonSerializer.Serialize(new { command, family, owners });
+            return st;
+        }
+        catch (Exception ex)
+        {
+            return "{\"error\":\"" + ex.Message.Replace("\"", "'") + "\"}";
+        }
+    }
+
+    /// <summary>调试：直接 poking 原生动画状态（诊断表情系统卡死）。</summary>
+    public string DebugPoke(string? action)
+    {
+        try
+        {
+            if (!TryGetLocalCharacter(out var chara))
+                return "{\"error\":\"no char\"}";
+            switch (action)
+            {
+                case "state":
+                {
+                    var speeds = new float[14];
+                    for (uint i = 0; i < 14; i++) speeds[i] = chara->Timeline.TimelineSequencer.GetSlotSpeed(i);
+                    var tls = new ushort[14];
+                    for (uint i = 0; i < 14; i++) tls[i] = chara->Timeline.TimelineSequencer.GetSlotTimeline(i);
+                    var (ok, dur, _, lt) = AccessMainControl(0, false);
+                    return System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        mode = (int)chara->Mode, modeParam = chara->ModeParam, baseOverride = chara->Timeline.BaseOverride,
+                        overallSpeed = chara->Timeline.OverallSpeed, slotSpeeds = speeds, slotTimelines = tls,
+                        controlOk = ok, dur, lt, emoteId = chara->EmoteController.EmoteId,
+                        stance = chara->EmoteController.Stance, poseType = (int)chara->EmoteController.CurrentPoseType
+                    });
+                }
+                case "blendidle":
+                    chara->Timeline.TimelineSequencer.PlayTimeline(3);
+                    return "{\"done\":\"blendidle(PlayTimeline 3)\"}";
+                case "playaction3":
+                    chara->Timeline.PlayActionTimeline(3);
+                    return "{\"done\":\"PlayActionTimeline(3)\"}";
+                case "modecycle":
+                    chara->SetMode(CharacterModes.AnimLock, 0);
+                    chara->Mode = CharacterModes.Normal;
+                    chara->ModeParam = 0;
+                    return "{\"done\":\"modecycle AnimLock->Normal\"}";
+                case "setmode_normal":
+                    chara->SetMode(CharacterModes.Normal, 0);
+                    return "{\"done\":\"SetMode(Normal,0) via function\"}";
+                case "mode_raw_normal":
+                    chara->Mode = CharacterModes.Normal;
+                    chara->ModeParam = 0;
+                    return "{\"done\":\"raw Mode=Normal\"}";
+                case "speeds1":
+                    SetAllControlSpeeds(1f);
+                    return "{\"done\":\"all speeds = 1\"}";
+                case "reset":
+                    ResetEmoteState();
+                    return "{\"done\":\"ResetEmoteState\"}";
+                case "emote_bow":
+                    ExecuteEmoteDirect(0);
+                    return "{\"done\":\"ExecuteEmote(bow=0)\"}";
+                default:
+                    return "{\"error\":\"unknown action\",\"actions\":[\"state\",\"blendidle\",\"playaction3\",\"modecycle\",\"speeds1\",\"reset\",\"emote_bow\"]}";
+            }
+        }
+        catch (Exception ex)
+        {
+            return "{\"error\":\"" + ex.Message.Replace("\"", "'") + "\"}";
+        }
+    }
+
+    /// <summary>调试端点数据：槽0时间轴/表情状态/绑定时长（诊断动画通道行为）。</summary>
+    public string GetDebugAnimState()    {
         try
         {
             var (ok, dur, binding, lt) = AccessMainControl(0, false);
@@ -1189,6 +1668,10 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                 previewMode = _previewMode,
                 pendingCommand = _pendingCommand,
                 attached = _attached,
+                hasPin = _hasPin,
+                pinnedTimelineId = _pinnedTimelineId,
+                baseOverride = (TryGetLocalCharacter(out var dbgChara) ? dbgChara->Timeline.BaseOverride : (ushort)0),
+                charMode = (TryGetLocalCharacter(out var dbgChara2) ? (int)dbgChara2->Mode : 0),
                 idleTimelines = _idleTimelines.ToArray(),
                 learned = LearnedTimelines.ToDictionary(kv => kv.Key, kv => kv.Value.ToArray()),
                 motionPreferred = MotionPreferred.ToArray(),

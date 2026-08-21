@@ -154,6 +154,11 @@ public sealed class HttpServer : IDisposable
                     "/actions/emote-durations" => GetEmoteDurationsJson(),
                     "/actions/measured-durations" => GetMeasuredDurationsJson(),
                     "/debug/animstate" => _freezer?.GetDebugAnimState() ?? "{\"error\":\"no freezer\"}",
+                    "/debug/poke" => _freezer?.DebugPoke(query["action"]) ?? "{\"error\":\"no freezer\"}",
+                    "/debug/emotefamily" => _freezer?.GetDebugEmoteFamily(query["cmd"],
+                        (query["ids"] ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries)
+                            .Select(s => ushort.TryParse(s.Trim(), out var v) ? v : (ushort)0).Where(v => v != 0).ToArray())
+                        ?? "{\"error\":\"no freezer\"}",
                     "/actions/races" => GetRacesJson(),
                     "/dancers" => GetDancersJson(),
                     "/classjobs" => GetClassJobsJson(),
