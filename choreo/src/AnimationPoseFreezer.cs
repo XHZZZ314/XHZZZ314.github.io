@@ -607,10 +607,10 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             _lastWrittenTime = -1f;
             return;
         }
-        // 直接通道：槽0时间轴 id 是动画身份。强制通道下必须精确等于播放的 id（兜底模式用集合）。
-        // id 匹配时，时长/指针的波动只是过渡期读数失真 → 刷新基准即可，不触发重播；id 变了（游戏结束动作回待机）→ 自愈重播
+        // 直接通道：槽0时间轴 id 是动画身份（集合语义，容忍游戏把强制 id 规范化成它解析的变体）。
+        // id 仍在集合内时，时长/指针波动只是过渡期读数失真 → 刷新基准，不触发重播；id 变了（回待机）→ 自愈
         var curSlot0 = CurrentSlot0Timeline();
-        if (DirectPending && (curSlot0 == _playedTimelineId || (_playedTimelineId == 0 && Awaiting(_pendingCommand, curSlot0))))
+        if (DirectPending && !_idleTimelines.Contains(curSlot0) && Awaiting(_pendingCommand, curSlot0))
         {
             _attachDuration = probe.Duration;
             _attachBinding = probe.Binding;
@@ -694,59 +694,23 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
         {
             var slot0 = CurrentSlot0Timeline();
 
-            // 直接强制通道（我们自己指定了要播的时间轴）：验证必须**精确等于播放的 id**。
-            // 不用集合/时长宽泛匹配 —— 族集合里有别的命令共享的时间轴、时长相近的动作遍地都是，
-            // 宽泛匹配会把残留绑定/别人的动画当成自己的挂上 = 动作错误（实测高发）。
-            if (_playedTimelineId != 0)
+            // 集合验证（v0.5.11 已验证语义）：槽0 属于该命令（表内族 ∪ 学习过）且非待机 → 挂载。
+            // 不能用"精确等于播放 id"—— 游戏有时会把强制的 id 规范化成它自己解析的变体
+            // （v0.5.13 教训：精确匹配误判失败 → 不停重放 = 抽搐；重放 ladder 又闪过错误变体 = 动作错）。
+            // 待机排除防止把待机绑定当自己的动画钉住。
+            if (slot0 != 0 && !_idleTimelines.Contains(slot0) && Awaiting(_pendingCommand, slot0))
             {
-                if (slot0 == _playedTimelineId)
-                {
-                    // hka 控制槽换绑通常滞后 1-2 帧，等绑定指针切换（或 0.3s 短超时）再钉时间
-                    if (probe0.Binding != _preExecBinding || Now() - _lastExecTime > 0.3)
-                    {
-                        _attached = true;
-                        _attachDuration = d;
-                        _attachBinding = probe0.Binding;
-                        LearnTimeline(_pendingCommand, slot0); // 挂载成功即记忆（精确确认过的 id）
-                        KnownAttachDurations[_pendingCommand!] = d;
-                        _log.Information("Freeze attached direct (tl={id}, dur {d:F2}s)", slot0, d);
-                    }
-                    return;
-                }
-                // 未匹配：重试。前 3 次重播直接通道（候选限学习过的 + 主 id，不轮换全族 ——
-                // 族里含坐姿/卧姿等变体行的时间轴，播出即错误动作）；之后转 ExecuteEmote
-                // （让游戏自己选正确变体，验证切回集合模式）
-                if (Now() - _lastExecTime > 0.2 && _directAttempts < 8)
-                {
-                    _directAttempts++;
-                    if (_directAttempts <= 3)
-                    {
-                        _playIdx++; // 学习过的多个变体间轮换（都是精确确认过的）
-                        TryPlayTimelinePreferred(_pendingCommand ?? "");
-                    }
-                    else
-                    {
-                        _playedTimelineId = 0; // 切换到游戏选变体模式
-                        ExecuteEmoteDirect(_awaitEmoteId);
-                    }
-                    _lastExecTime = Now();
-                    _log.Information("Freeze direct retry {n} (played={p}, slot0={cur})", _directAttempts, _playedTimelineId != 0 ? _playedTimelineId : 0, slot0);
-                }
-                return;
-            }
-
-            // 兜底通道（ExecuteEmote/motion，游戏自己选变体）：集合验证 + 绑定切换才挂载
-            if (Awaiting(_pendingCommand, slot0))
-            {
+                // hka 控制槽换绑通常滞后 1-2 帧，等绑定指针切换（或 1s 短超时，游戏复用控制时）再钉时间
                 if (probe0.Binding != _preExecBinding || Now() - _lastExecTime > 1.0)
                 {
                     _attached = true;
                     _attachDuration = d;
                     _attachBinding = probe0.Binding;
-                    LearnTimeline(_pendingCommand, slot0);
+                    LearnTimeline(_pendingCommand, slot0); // 挂载成功即记忆（集合确认过的实际变体）
+                    KnownAttachDurations[_pendingCommand!] = d;
                     if (_pendingCommand != null && _directAttempts >= 2)
                         MotionPreferred[_pendingCommand] = true;
-                    _log.Information("Freeze attached direct (fallback, tl={id}, dur {d:F2}s)", slot0, d);
+                    _log.Information("Freeze attached direct (tl={id}, dur {d:F2}s)", slot0, d);
                 }
                 return;
             }
@@ -800,19 +764,16 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                 }
             }
             else { _learnCandidate = 0; _learnCandidateFrames = 0; }
-            // 还没挂上：0.2s 间隔重试。主通道 PlayTimeline 失败先重试它（原生调用零成本无节流），
-            // 连续失败转旧通道（ExecuteEmote/motion）。已知 motion 偏好的命令跳过 ExecuteEmote。
-            if (Now() - _lastExecTime > 0.2 && _directAttempts < 8)
+            // 还没挂上：0.25s 间隔重试。前 2 次重播直接强制（候选只在学习 id + 主 id 内轮换，
+            // 都是该命令确认过的变体/主变体）；之后转 ExecuteEmote（游戏自己选正确变体）；
+            // 已知 motion 偏好的命令跳过 ExecuteEmote。
+            if (Now() - _lastExecTime > 0.25 && _directAttempts < 8)
             {
                 _directAttempts++;
                 if (_directAttempts <= 2)
                 {
-                    // 重试换族内下一个 id（首选被游戏拒绝时不死磕同一个 —— jumpforjoy2/3/4 类变体）
                     _playIdx++;
                     TryPlayTimelinePreferred(_pendingCommand ?? "");
-                }
-                {
-                    // 重放直接时间轴
                 }
                 else
                 {
