@@ -55,20 +55,39 @@ public sealed class HttpServer : IDisposable
 
     public void Start()
     {
-        try
+        // 双开客户端会抢注 http.sys 前缀：另一客户端的监听器在它重载/关闭前一直占着端口。
+        // 立即放弃 = 本客户端从此无 API（实测热重载后端口被另一客户端抢走）。
+        // 后台有限重试 —— 对端监听器消亡后本实例即可接上（绝不阻塞插件加载线程）。
+        _cts = new CancellationTokenSource();
+        _serverTask = Task.Run(() => BindLoop(_cts.Token));
+    }
+
+    private async Task BindLoop(CancellationToken ct)
+    {
+        // 无限重试：90 次内每 2s（3 分钟，覆盖对端重载窗口），之后每 30s 低频兜底 ——
+        // 双开客户端只要对端让出端口（关闭/重载），本实例最终必然接管 API。
+        for (var attempt = 1; ; attempt++)
         {
-            _listener = new HttpListener();
-            _listener.Prefixes.Add($"http://localhost:{Port}/");
-            _listener.Start();
-            _cts = new CancellationTokenSource();
-            _serverTask = Task.Run(() => ListenLoop(_cts.Token));
-            _log.Information("HTTP server listening on http://localhost:{port}/", Port);
-        }
-        catch (Exception ex)
-        {
-            _log.Error(ex, "Failed to bind HTTP port {port} (可能被占用)", Port);
-            try { _listener?.Close(); } catch { }
-            _listener = null;
+            if (ct.IsCancellationRequested) return;
+            HttpListener? candidate = null;
+            try
+            {
+                candidate = new HttpListener();
+                candidate.Prefixes.Add($"http://localhost:{Port}/");
+                candidate.Start();
+                _listener = candidate;
+                _ = ListenLoop(ct);
+                _log.Information("HTTP server listening on http://localhost:{port}/ (attempt {a})", Port, attempt);
+                return;
+            }
+            catch (Exception ex)
+            {
+                try { candidate?.Close(); } catch { }
+                if (attempt == 1 || attempt % 15 == 0)
+                    _log.Error(ex, "HTTP port {port} busy (attempt {a}, likely another game client)", Port, attempt);
+                var delay = attempt <= 90 ? 2000 : 30000;
+                try { await Task.Delay(delay, ct); } catch (TaskCanceledException) { return; }
+            }
         }
     }
 
@@ -171,6 +190,8 @@ public sealed class HttpServer : IDisposable
                     "/actions/emote-durations" => GetEmoteDurationsJson(),
                     "/actions/measured-durations" => GetMeasuredDurationsJson(),
                     "/debug/animstate" => _freezer?.GetDebugAnimState() ?? "{\"error\":\"no freezer\"}",
+                    "/debug/diag" => _freezer?.GetDebugDiag() ?? "{\"error\":\"no freezer\"}",
+                    "/debug/tlinfo" => GetTimelineInfo(query["id"]),
                     "/debug/poke" => _freezer?.DebugPoke(query["action"]) ?? "{\"error\":\"no freezer\"}",
                     "/settings/engine" => "{\"pinMode\":" + (AnimationPoseFreezer.PinModeEnabled ? "true" : "false") + "}",
                     "/debug/emotefamily" => _freezer?.GetDebugEmoteFamily(query["cmd"],
@@ -613,6 +634,21 @@ public sealed class HttpServer : IDisposable
     {
         try { return System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "unknown"; }
         catch { return "unknown"; }
+    }
+
+    private string GetTimelineInfo(string? idStr)
+    {
+        try
+        {
+            if (!ushort.TryParse(idStr, out var id))
+                return "{\"error\":\"id required\"}";
+            var sheet = _dataManager.GetExcelSheet<ActionTimeline>();
+            var row = sheet.GetRow(id);
+            var key = "";
+            try { key = row.Key.ToString(); } catch { }
+            return JsonSerializer.Serialize(new { id, key = key ?? "", isLoop = row.IsLoop }, JsonOptions);
+        }
+        catch (Exception ex) { return "{\"error\":\"" + ex.Message.Replace("\"", "'") + "\"}"; }
     }
 
     private string GetVersionJson()

@@ -48,6 +48,19 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
     // Emote 表 ActionTimeline[0..5] 里（如 /breakdance 实际绑 7407）——首次观察到即学习，
     // 之后验证直接通过（不然重试 8 次也挂不上 = "停不住"）
     private static readonly ConcurrentDictionary<string, List<ushort>> LearnedTimelines = new();
+    // v0.5.24：表行 [0] = 主时间轴（规范 id）。[1]+ 是引入/上身等辅助变体（绅士之舞
+    // [576,575]：576=7.3s 主舞，575=2.5s 引入段）—— 游戏先绑引入段再换绑主轴，
+    // 在引入段上挂载学习 = 永远定格在引入段（"动作错的很离谱"的根源）。
+    private static readonly ConcurrentDictionary<string, ushort> CanonicalTimelines = new();
+    // 诊断环形缓冲（v0.5.24）：双开客户端抢不到日志文件（另一客户端独占锁定），
+    // 关键决策进内存环形缓冲，经 /debug/diag 读取 —— 无日志也能定位"动作错"路径。
+    private static readonly ConcurrentQueue<string> _diag = new();
+    private static void Diag(string msg)
+    {
+        _diag.Enqueue($"{DateTime.Now:HH:mm:ss.fff} {msg}");
+        while (_diag.Count > 60) _diag.TryDequeue(out _);
+    }
+    private static readonly ConcurrentDictionary<string, ushort[]> CommandTimelineSets = new();
 
     // 待机时间轴 id 集合（学习排除）：过渡窗口里"EmoteId 已是新表情但动画还没绑上"时
     // 槽0 是待机 —— 学习路径会把待机 id 学进缓存（曾实际发生：learned timeline 3）。
@@ -122,10 +135,16 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
     // 直接表情通道（表情命令）：命令 → 表情行ID + 全部时间轴行ID
     private static ConcurrentDictionary<string, EmoteIds>? _emoteMap;
     private ushort[] _awaitTimelineIds = Array.Empty<ushort>(); // 等待挂载的时间轴集合（空=聊天通道）
+    private ushort _canonicalTimeline;  // 表行 [0] 主时间轴（0=无规范）：引入段占槽时等它换绑，学习只认它
     private ushort _awaitEmoteId;      // 对应的表情行ID（重试用）
+    private ushort _diagLastWaitSlot;  // 诊断去重：canonWait 上次记录的槽0 值
+    private double _diagLastWaitAt;    // 诊断去重：canonWait 上次记录时刻
+    private bool _observedRowMerged;   // 已把游戏解析出的变体行合并进等待集合（本命令）
+    private double _observedRowAt;     // 变体行合并时刻（canonWait 窗口顺延）
     private ushort[] _awaitEmoteFamily = Array.Empty<ushort>(); // 同命令全部表情行号（状态机确认用族匹配）
     private bool _awaitIsLoop;         // 该表情含循环时间轴（定格目标时间需按单轮时长取模）
     private ushort _preExecSlot0;      // 执行前的槽0时间轴 id（学习实际绑定用：重试后变成且稳定的值=该表情实际绑定）
+    private ushort _preExecEmoteId;    // 执行前的表情行 id（变体行合并排除残留表情）
     private int _directAttempts;       // 直接通道重试次数
     private int _chatRetries;          // 聊天通道超时重发次数
 
@@ -519,6 +538,7 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             _playIdx = 0;
             _facialOnly = false;
             _gaveUp = false;
+            _observedRowMerged = false;
             var direct = TryResolveEmote(command, out var ids);
             if (direct)
             {
@@ -564,6 +584,21 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                     foreach (var t in resolvedTls) if (!union.Contains(t)) union.Add(t);
                     _awaitTimelineIds = union.ToArray();
                 }
+                // v0.5.24 规范化：主时间轴 = 游戏解析行的 [0]（无解析行则用表行 [0]）。
+                // 引入段（[1] 号）先上槽是游戏自己的起播顺序，挂载/学习都必须等主轴。
+                _canonicalTimeline = resolvedTls.Length > 0 ? resolvedTls[0]
+                    : (ids.Timelines.Length > 0 ? ids.Timelines[0] : (ushort)0);
+                CommandTimelineSets[command] = _awaitTimelineIds;
+                if (_canonicalTimeline != 0)
+                {
+                    CanonicalTimelines[command] = _canonicalTimeline;
+                    // 自愈：洗掉历史上学到过的同表辅助变体（引入段污染条目）
+                    if (LearnedTimelines.TryGetValue(command, out var polluted))
+                        lock (polluted)
+                            polluted.RemoveAll(id => id != _canonicalTimeline && Array.IndexOf(_awaitTimelineIds, id) >= 0);
+                }
+                else
+                    CanonicalTimelines.TryRemove(command, out _);
                 _awaitEmoteId = ids.Emote;
                 _awaitEmoteFamily = ids.EmoteFamily;
                 _awaitIsLoop = ids.AnyLoop;
@@ -619,15 +654,17 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                     ExecuteMotionFallback();
                     _execChannel = "motion";
                 }
-                else
-                {
-                    ExecuteEmoteDirect(ids.Emote);
-                    _execChannel = "emote";
-                }
+                    else
+                    {
+                        ExecuteEmoteDirect(ids.Emote);
+                        _execChannel = "emote";
+                    }
+                    Diag($"exec {command}: ch={_execChannel} canon={_canonicalTimeline} set=[{string.Join(",", _awaitTimelineIds)}] learnedN={(LearnedTimelines.TryGetValue(command, out var lrn3) ? lrn3.Count : 0)}");
             }
             else
             {
                 _awaitTimelineIds = Array.Empty<ushort>();
+                _canonicalTimeline = 0;
                 _awaitEmoteId = 0;
                 _awaitIsLoop = false;
                 _executor.ExecuteCommand(command);
@@ -641,6 +678,7 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             _preExecDuration = pre.Duration;
             _preExecBinding = pre.Binding;
             _preExecSlot0 = CurrentSlot0Timeline();
+            _preExecEmoteId = (ushort)CurrentEmoteId();
             _attachDuration = -1f;
             _lastWrittenTime = -1f;
             // 时长缓存不取挂载瞬间读数（过渡期不准，如 /bow 起播瞬间读到 3.00 而非 3.57），
@@ -956,10 +994,35 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
         {
             var slot0 = CurrentSlot0Timeline();
 
+            // v0.5.24：游戏可能把命令解析到其他变体行（种族/性别变体 —— 实测表行 104
+            // 是拉拉菲尔舞，非拉拉菲尔角色上游戏绑成行 108，表集合 [576,575] 永远等不到，
+            // 等待/学习全部落空）。观察到族外 EmoteId 且命令是我们刚发的 → 合并该行时间轴，
+            // 规范 id 改为该行 [0]，族匹配（AwaitingEmote）也把该行算进来。
+            var obsEmote = (ushort)CurrentEmoteId();
+            if (!_observedRowMerged && !_attached && obsEmote != 0 && _awaitEmoteId != 0 && obsEmote != _awaitEmoteId
+                && obsEmote != _preExecEmoteId // 执行前就在播的表情行是残留，不是我们命令的解析结果
+                && Array.IndexOf(_awaitEmoteFamily, obsEmote) < 0 && _pendingCommand != null
+                && Now() - _lastExecTime < 12.0)
+                TryMergeVariantRow(obsEmote);
+
             // 链式签名跟踪（A3 用）：族内 EmoteId → 族外 EmoteId 的转移 = 游戏把我们的表情
             // 链到后续段落（黄金之舞 104→117）。被游戏拒绝的命令从未见过族内确认，不会误置。
             if (AwaitingEmote()) _sawFamSinceExec = true;
             else if (_sawFamSinceExec && CurrentEmoteId() != 0) _chainFromFam = true;
+
+            // v0.5.24 引入段等待：槽上是表内辅助变体（≠ [0] 主轴）时，游戏的起播顺序是
+            // 先绑引入段再换绑主轴（0.3-2.5s）。此刻不挂载（定格在引入段 = 错误动作）、
+            // 不学习、不重试（重发命令会重起引入段 = 永远等不到主轴）。仅表内 id 等待
+            // （学习到的表外变体不受影响）；3s 超时回退旧挂载（防御表数据不按惯例的行）。
+            var canonWait = _canonicalTimeline != 0 && slot0 != 0 && slot0 != _canonicalTimeline
+                && !_idleTimelines.Contains(slot0)
+                && Array.IndexOf(_awaitTimelineIds, slot0) >= 0
+                && (Now() - _lastExecTime < 3.0 || Now() - _observedRowAt < 2.5);
+            if (canonWait && (slot0 != _diagLastWaitSlot || Now() - _diagLastWaitAt > 0.5f))
+            {
+                _diagLastWaitSlot = slot0; _diagLastWaitAt = Now();
+                Diag($"canonWait: slot0={slot0} canon={_canonicalTimeline} ch={_execChannel} emote={CurrentEmoteId()}");
+            }
 
             // 面部表情类（表预测）：执行后 0.3s 即完成 —— 不等主槽绑定（等不到）、不重试
             // （角色已在做正确表情）、不学习（面部 timeline 学进去会被当主槽 id 播放 = 错误动作）
@@ -979,7 +1042,7 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             // （v0.5.13 教训：精确匹配误判失败 → 不停重放 = 抽搐；重放 ladder 又闪过错误变体 = 动作错）。
             // 待机排除防止把待机绑定当自己的动画钉住；但表情状态机确认在播（族匹配）时放行 ——
             // 命令自己的变体（/wave 的 663）播完会被游戏当基线留在槽上，不能因待机标记拒挂。
-            if (slot0 != 0 && (!_idleTimelines.Contains(slot0) || AwaitingEmote()) && Awaiting(_pendingCommand, slot0))
+            if (!canonWait && slot0 != 0 && (!_idleTimelines.Contains(slot0) || AwaitingEmote()) && Awaiting(_pendingCommand, slot0))
             {
                 // hka 控制槽换绑通常滞后 1-2 帧，等绑定指针切换（或 1s 短超时，游戏复用控制时）再钉时间
                 if (probe0.Binding != _preExecBinding || Now() - _lastExecTime > 1.0)
@@ -996,6 +1059,7 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                     if (PinModeEnabled)
                         TryPinTimeline(slot0, triggerBind: false);
                     _log.Information("Freeze attached direct (tl={id}, dur {d:F2}s, pinned={p})", slot0, d, _hasPin);
+                    Diag($"attached tl={slot0} dur={d:F2} ch={_execChannel} emote={CurrentEmoteId()} canon={_canonicalTimeline} att={_directAttempts}");
                 }
                 return;
             }
@@ -1092,7 +1156,10 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             // give-up 后仍生效 —— 迟到的 motion 落地也能被静默学走，零命令）
             // + 排除"上个动作自然结束后的待机回绑"（实测：残留舞蹈 700 在 motion 在途时
             // 播完 → 待机 3 回绑 ≠ 快照 → 被误当 motion 产物）。用表情回归基线候选当软待机
-            if (CanLearnTimeline(slot0) && OwnerUnknown(slot0) && slot0 != 3 && _directAttempts >= 2
+            // v0.5.24 加固：仅 motion 通道可用 —— 表情通道的命令被游戏拒绝时（双人坐骑/
+            // 特殊区域等），槽上的表外残留不是本命令的动画（实测双开客户端拒绝表情时把
+            // 无关 id 13 学给 /mandervilledance → 下一轮定格在无关姿势）
+            if (_execChannel == "motion" && CanLearnTimeline(slot0) && OwnerUnknown(slot0) && slot0 != 3 && _directAttempts >= 2
                 && slot0 != _motionSentSlot0 && slot0 != _postEmoteBaseCandidate
                 && Now() - _lastExecTime > 2.2)
             {
@@ -1101,6 +1168,11 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                 if (_learnCandidateFrames >= 3)
                 {
                     _learnCandidateFrames = 0;
+                    // v0.5.24：motion 落地的表外时间轴先反查属主行 —— 命令被游戏解析到
+                    // 种族/性别变体行时（表行 104 拉拉菲尔舞 → 实际行 108），合并该行的
+                    // 全部时间轴并把规范 id 定为该行 [0]，回到正常挂载/等待流程。
+                    if (!_observedRowMerged && _pendingCommand != null && TryMergeVariantRow(slot0))
+                        return;
                     LearnTimeline(_pendingCommand, slot0);
                     _log.Information("Freeze learned timeline {id} for {cmd} (motion-confirmed)", slot0, _pendingCommand);
                     return;
@@ -1118,7 +1190,7 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             // 首次重试延到 1.6s，且重试用零命令的重放（re-pin），不发游戏命令。
             var isPinLearned = _execChannel == "pin-learned";
             var firstDelay = isPinLearned ? 2.2 : 0.8;
-            if (Now() - _lastExecTime > firstDelay && _directAttempts < 2 && !_gaveUp)
+            if (!canonWait && Now() - _lastExecTime > firstDelay && _directAttempts < 2 && !_gaveUp)
             {
                 // v0.5.22：卡住才打断（仅增强引擎；经典引擎无钉住，循环残留由重试阶梯处理
                 // —— v0.5.11 行为族没有打断器）—— 到了重试时刻还绑不上，且槽上卡的是表外
@@ -1127,6 +1199,7 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                     && !_idleTimelines.Contains(slot0) && slot0 != _postEmoteBaseCandidate)
                     TryBreakLingeringLoop(_pendingCommand);
                 _directAttempts++;
+                Diag($"retry #{_directAttempts} ch={_execChannel} slot0={slot0} emote={CurrentEmoteId()}");
                 if (PinModeEnabled && isPinLearned && _directAttempts == 1)
                 {
                     // v0.5.21 终版：pin-learned 卡住（循环残留占槽，重钉也绑不上）→ 解钉后
@@ -1459,6 +1532,12 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
     {
         if (string.IsNullOrEmpty(command) || timelineId == 0) return;
         if (timelineId == 3) return; // 3 = 标准待机（Brio 同款常量）—— 永远不是动作，杜绝把待机学进缓存
+        // v0.5.24：同表辅助变体（引入段）不学 —— 表行 [0] 是主时间轴，[1]+ 是引入/上身
+        // 变体（575/6247 实测：学到就永远定格在引入段）。所有学习路径（挂载/状态/残留/
+        // motion 确认）统一在此拦截，等主轴上槽后再学 [0]。
+        if (CanonicalTimelines.TryGetValue(command, out var canon) && canon != 0 && timelineId != canon
+            && CommandTimelineSets.TryGetValue(command, out var set) && Array.IndexOf(set, timelineId) >= 0)
+            return;
         if (!OwnerAllows(command, timelineId))
         {
             // 表内归属别的命令 —— 拒学（跨命令污染是"特殊动作不生效/错误"的根源之一）
@@ -1482,12 +1561,80 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             }
             var list = LearnedTimelines.GetOrAdd(command, _ => new List<ushort>());
             lock (list) { if (!list.Contains(timelineId)) list.Add(timelineId); } // 有序：最近学习的在重试轮换中优先
+            Diag($"learn {command} -> {timelineId}");
         }
     }
 
-    /// <summary>延迟测量前的身份校验：延迟期间用户可能已拖到别的动作，防止把别人的时长记串（v0.5.6 修复）。</summary>
-    private bool VerifyMeasureTarget(string cmd)
+    /// <summary>
+    /// 合并游戏实际解析出的变体行（v0.5.24）。rowIdOrTimeline 传表情行号时直接合并该行；
+    /// 传时间轴 id 时反查 Emote 表找到属主行（motion 通道不设 EmoteId，只能反查）。
+    /// 合并 = 该行全部时间轴并入等待集合 + 规范 id 改为该行 [0] + 族匹配把该行算进来。
+    /// </summary>
+    private bool TryMergeVariantRow(ushort rowIdOrTimeline)
     {
+        if (_pendingCommand == null) return false;
+        try
+        {
+            var sheet = _dataManager.GetExcelSheet<Emote>();
+            uint rowId = rowIdOrTimeline;
+            if (Array.IndexOf(_awaitTimelineIds, rowIdOrTimeline) >= 0 || OwnerKnown(rowIdOrTimeline))
+            {
+                // 是时间轴 id 而非行号 —— 反查属主行（跳过命令自己的行/族，那些已在集合里）
+                rowId = 0;
+                foreach (var refRow in sheet)
+                {
+                    if (refRow.RowId == _awaitEmoteId || Array.IndexOf(_awaitEmoteFamily, (ushort)refRow.RowId) >= 0) continue;
+                    for (var i = 0; i < 6; i++)
+                    {
+                        try
+                        {
+                            var t = refRow.ActionTimeline[i];
+                            if (t.IsValid && t.RowId == rowIdOrTimeline) { rowId = refRow.RowId; break; }
+                        }
+                        catch { }
+                    }
+                    if (rowId != 0) break;
+                }
+                if (rowId == 0) return false;
+            }
+            var row = sheet.GetRow(rowId);
+            var list = new List<ushort>();
+            for (var i = 0; i < 6; i++)
+            {
+                try { var t = row.ActionTimeline[i]; if (t.IsValid) list.Add((ushort)t.RowId); } catch { }
+            }
+            if (list.Count == 0) return false;
+            _observedRowMerged = true;
+            _observedRowAt = Now();
+            ResolvedEmoteRow[_pendingCommand] = (ushort)rowId;
+            var merged = new List<ushort>(_awaitTimelineIds);
+            foreach (var t in list) if (!merged.Contains(t)) merged.Add(t);
+            _awaitTimelineIds = merged.ToArray();
+            CommandTimelineSets[_pendingCommand] = _awaitTimelineIds;
+            _canonicalTimeline = list[0];
+            if (_canonicalTimeline != 0)
+            {
+                CanonicalTimelines[_pendingCommand] = _canonicalTimeline;
+                if (LearnedTimelines.TryGetValue(_pendingCommand, out var polluted))
+                    lock (polluted)
+                        polluted.RemoveAll(id => id != _canonicalTimeline && Array.IndexOf(_awaitTimelineIds, id) >= 0);
+            }
+            Diag($"merged variant row {rowId} (src={rowIdOrTimeline}): canon={_canonicalTimeline} set=[{string.Join(",", _awaitTimelineIds)}]");
+            return true;
+        }
+        catch { return false; }
+    }
+
+    private bool OwnerKnown(ushort timelineId)
+    {
+        foreach (var kv in LearnedTimelines)
+            lock (kv.Value)
+                if (kv.Value.Contains(timelineId)) return true;
+        return false;
+    }
+
+    /// <summary>延迟测量前的身份校验：延迟期间用户可能已拖到别的动作，防止把别人的时长记串（v0.5.6 修复）。</summary>
+    private bool VerifyMeasureTarget(string cmd)    {
         try
         {
             // 已拖到别的动作：丢弃过期测量
@@ -1740,13 +1887,24 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
     // 是"僵死"）。默认经典 —— 用户实测确认过的行为族。网页可切换。
     public static bool PinModeEnabled { get; set; } = false;
 
-    /// <summary>调试端点数据：槽0时间轴/表情状态/绑定时长（诊断动画通道行为）。</summary>
+    /// <summary>诊断端点数据：槽0时间轴/表情状态/绑定时长（诊断动画通道行为）。</summary>
+    public string GetDebugDiag()
+    {
+        try
+        {
+            var lines = _diag.ToArray();
+            return System.Text.Json.JsonSerializer.Serialize(new { pid = Environment.ProcessId, lines });
+        }
+        catch (Exception ex) { return "{\"error\":\"" + ex.Message.Replace("\"", "'") + "\"}"; }
+    }
+
     public string GetDebugAnimState()    {
         try
         {
             var (ok, dur, binding, lt) = AccessMainControl(0, false);
             var state = new
             {
+                pid = Environment.ProcessId, // 双开客户端抢端口时识别当前服务端是哪个游戏进程
                 slot0 = CurrentSlot0Timeline(),
                 emoteId = CurrentEmoteId(),
                 isEmoting = IsEmoting(),
