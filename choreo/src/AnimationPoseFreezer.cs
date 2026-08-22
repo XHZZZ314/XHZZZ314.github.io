@@ -483,12 +483,11 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
         {
             // 钉住会话先解除（恢复原 Mode/BaseOverride）—— 后续命令要走正常状态机执行
             Unpin(blendToIdle: false);
-            // 解钉后循环变体（如舞蹈 loop）还在槽上无限循环，会拒收后续命令 —— 打断之。
-            // 但目标已有学习缓存时不打断：钉住路径自己就能压过循环（实测瞬时接管），
-            // bow 反而会和瞬时钉住竞争 —— bow 晚几百毫秒落地顶掉刚钉上的动画
-            // = 可用动作（如 /flamedance）偶发"不生效"的竞争根源
-            if (!(LearnedTimelines.TryGetValue(command, out var lrnB) && lrnB.Count > 0))
-                TryBreakLingeringLoop(command);
+            // 解钉后循环变体（舞蹈/打盹等 loop）还在槽上无限循环，会拒收后续命令与钉住绑定
+            // （压测实测：doze 的 703 循环残留时 carrybook 钉住正确 id 也绑不上）。无条件打断。
+            // v0.5.21：bow 与 pin-learned 的竞争由"pin-learned 轮首次重试延迟 1.6s + 零命令
+            // 重钉"兜底（bow 吞掉绑定后 1.6s 内 re-pin 重新接管，不再依赖跳过打断）
+            TryBreakLingeringLoop(command);
             SetAllControlSpeeds(1f); // 恢复全部槽速度，让新动作能正常绑定起播
             // 释放旧 emote 状态机：三层停表把旧动画钉得太彻底时，游戏的表情状态机
             // 在等旧动画"播完"才接受新表情（ExecuteEmote 和聊天命令都会被拒 ——
@@ -814,11 +813,16 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
         {
             _attachDuration = probe.Duration;
             _attachBinding = probe.Binding;
+            // v0.5.21：钉住还在但 attach 标志丢了（过渡期绑定闪烁触发过重挂载）→ 槽0 仍是
+            // 我们的动画且钉着 —— 直接恢复挂载继续写时间，否则出现"钉着对的动作但不冻结"
+            if (!_attached) { _attached = true; _lastWrittenTime = -1f; }
             return;
         }
         // 钉住态下槽0竟然换出了集合（理论上 BaseOverride 已挡住 —— 防御性兜底）：原地重钉。
-        // 纯原生调用零命令，不可能形成命令风暴；不走重执行阶梯（阶梯会清钉住、发聊天命令）
-        if (_hasPin && _pinnedTimelineId != 0 && Now() - _lastExecTime > 0.5)
+        // 纯原生调用零命令，不可能形成命令风暴；不走重执行阶梯（阶梯会清钉住、发聊天命令）。
+        // v0.5.21：重钉前校验钉住的 id 仍属于当前命令 —— 换命令后残留的旧 pin 绝不能重钉
+        // （压测实测换轮后重钉上个命令的动画 = 播出错误动作）
+        if (_hasPin && _pinnedTimelineId != 0 && Awaiting(_pendingCommand, _pinnedTimelineId) && Now() - _lastExecTime > 0.5)
         {
             if (TryGetLocalCharacter(out var rpChara))
             {
@@ -917,6 +921,18 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                 _executor.ExecuteCommand(_pendingCommand.Trim() + " motion");
                 _log.Information("Freeze: motion re-send #{n} after bow breaker ({cmd})", _motionResendCount, _pendingCommand);
             }
+        }
+        // v0.5.21：挂载等待期也要守住钉住 —— BaseOverride 的每帧回写原来只在 Hold（已挂载）
+        // 阶段做，等待期被游戏重算清掉后，上一轮残留动画（如 /aback 的 6220）会顶掉钉住
+        // 请求的绑定 → 挂载永远等不到（压测实测 att=False pin=True slot0=外来动画 的根源）
+        if (_hasPin && TryGetLocalCharacter(out var apChara))
+        {
+            try
+            {
+                if (apChara->Timeline.BaseOverride != _pinnedTimelineId)
+                    apChara->Timeline.BaseOverride = _pinnedTimelineId;
+            }
+            catch { }
         }
         // 拖动流中：挂载目标已过时（延迟中了新命令），停止旧目标的重试/motion 兜底 ——
         // 否则兜底命令会和结算后的新动作交错执行，表现为"两个动作叠加"。
@@ -1085,13 +1101,27 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             // （C2 motion-残留已移除 v0.5.19：在途 motion 与 dedup 无法区分 —— 实测把待机 3
             // 学给 /breakdance 并钉住。变化证据（C）对两种场景都健全：motion 落地 → 槽0 变 → C 学；
             // motion 被去重（动画已在播）→ 用户看到的就是对的动画，放弃挂载即可，无副作用）
-            // 有界重试（防命令风暴）：0.6s 间隔，最多 2 次重试 —— 第 1 次重发 ExecuteEmote、
-            // 第 2 次一条 motion。绝不播表内原始 id。**没有无限兜底** —— 曾每 0.35s 无限发
-            // motion，对不绑主槽的动作每条都真执行（~2s 后落地）→ 用户看到"没写过的动作"
-            if (Now() - _lastExecTime > 0.6 && _directAttempts < 2 && !_gaveUp)
+            // 有界重试（防命令风暴）：最多 2 次重试 —— 第 1 次重发 ExecuteEmote、第 2 次一条
+            // motion。绝不播表内原始 id，没有无限兜底（曾无限发 motion → "没写过的动作"）。
+            // v0.5.21：pin-learned 通道的绑定固有延迟 ~0.3-1s（PlayActionTimeline 排队），
+            // 0.6s 就发重试会在绑定在途时又叠命令 —— 高压下积压的在途命令数秒后落地，
+            // 踩坏后续轮次的钉住（压测实测 mandervilledance 连续误判）。pin-learned 轮：
+            // 首次重试延到 1.6s，且重试用零命令的重放（re-pin），不发游戏命令。
+            var isPinLearned = _execChannel == "pin-learned";
+            var firstDelay = isPinLearned ? 1.6 : 0.6;
+            if (Now() - _lastExecTime > firstDelay && _directAttempts < 2 && !_gaveUp)
             {
                 _directAttempts++;
-                if (_directAttempts == 1)
+                if (isPinLearned && _directAttempts == 1)
+                {
+                    // v0.5.21 终版：pin-learned 卡住（循环残留占槽，重钉也绑不上）→ 解钉后
+                    // 直接走表情通道 —— ExecuteEmote 由游戏换绑，必定能逐出循环调度器
+                    // （压测实测 doze 残留下 carrybook 重钉永远失败，表情通道一次成功）
+                    _execChannel = "emote";
+                    Unpin(blendToIdle: false);
+                    ExecuteEmoteDirect(_awaitEmoteId);
+                }
+                else if (_directAttempts == 1)
                 {
                     _execChannel = "emote";
                     ExecuteEmoteDirect(_awaitEmoteId);
