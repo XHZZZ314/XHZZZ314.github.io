@@ -141,6 +141,7 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
     private double _diagLastWaitAt;    // 诊断去重：canonWait 上次记录时刻
     private bool _observedRowMerged;   // 已把游戏解析出的变体行合并进等待集合（本命令）
     private double _observedRowAt;     // 变体行合并时刻（canonWait 窗口顺延）
+    private uint _lastMergeRejectKey;  // 诊断去重：上次拒绝合并的行号
     private ushort[] _awaitEmoteFamily = Array.Empty<ushort>(); // 同命令全部表情行号（状态机确认用族匹配）
     private bool _awaitIsLoop;         // 该表情含循环时间轴（定格目标时间需按单轮时长取模）
     private ushort _preExecSlot0;      // 执行前的槽0时间轴 id（学习实际绑定用：重试后变成且稳定的值=该表情实际绑定）
@@ -1598,12 +1599,50 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                 if (rowId == 0) return false;
             }
             var row = sheet.GetRow(rowId);
+            // v0.5.25：拥有自己 TextCommand 的行是"别的命令的行"（如霹雳舞行 107=/breakdance），
+            // 不是种族/性别变体行 —— 真变体行没有自己的文字命令（如 pose04 行 108）。
+            // 迟到的排队命令落地时（循环舞残留期拖到新命令，旧命令数秒后才生效），
+            // 把别人的命令行并进来会把规范 id 毒化成别人的动画 → 真动画上槽反被
+            // canonWait 挡住 = "方形舞/练拳被吞"的根源。有命令的行一律拒绝。
+            try
+            {
+                if (row.TextCommand.IsValid && row.TextCommand.Value.Command.ToString() is { Length: > 0 } ownCmd)
+                {
+                    if (_lastMergeRejectKey != rowId)
+                    {
+                        _lastMergeRejectKey = rowId;
+                        Diag($"merge rejected: row {rowId} has own command '{ownCmd}' (stale queued emote?)");
+                    }
+                    return false;
+                }
+            }
+            catch { }
             var list = new List<ushort>();
             for (var i = 0; i < 6; i++)
             {
                 try { var t = row.ActionTimeline[i]; if (t.IsValid) list.Add((ushort)t.RowId); } catch { }
             }
             if (list.Count == 0) return false;
+            // v0.5.25：行的动画已被其他命令学过 = 那个命令的变体行（如霹雳舞的行 107，
+            // 3181 早已学给 /breakdance）。迟到的排队旧命令落地时若把它并给当前命令，
+            // 规范 id 会被毒化成别人的动画 → 真动画上槽反被 canonWait 挡住（"被吞"）。
+            foreach (var lk in LearnedTimelines)
+            {
+                if (lk.Key == _pendingCommand) continue;
+                lock (lk.Value)
+                {
+                    foreach (var t in list)
+                        if (lk.Value.Contains(t))
+                        {
+                            if (_lastMergeRejectKey != rowId)
+                            {
+                                _lastMergeRejectKey = rowId;
+                                Diag($"merge rejected: row {rowId} tl {t} already learned for {lk.Key} (stale queued emote?)");
+                            }
+                            return false;
+                        }
+                }
+            }
             _observedRowMerged = true;
             _observedRowAt = Now();
             ResolvedEmoteRow[_pendingCommand] = (ushort)rowId;

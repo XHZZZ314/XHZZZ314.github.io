@@ -2,7 +2,7 @@
   "Author": "XHZZZ314",
   "Name": "ChoreoHelper",
   "InternalName": "ChoreoHelper",
-  "AssemblyVersion": "0.5.24.0",
+  "AssemblyVersion": "0.5.25.0",
   "Description": "FF14 Choreography Helper - Timeline Editor with HTTP API",
   "ApplicableVersion": "any",
   "DalamudApiLevel": 15,
