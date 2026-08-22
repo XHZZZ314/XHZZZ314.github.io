@@ -1587,18 +1587,13 @@ function renderBottomBar(){
   store.dancers.forEach(function(d){sc+=d.switchClips.length;ac+=d.actionClips.length;lc+=d.lyricClips.length});
   var engBtn=document.createElement('button');
   engBtn.className='btn';engBtn.style.fontSize='10px';engBtn.style.padding='1px 8px';
-  var engClassic=store.engine!=='pin';
-  engBtn.textContent='\u5F15\u64CE: '+(engClassic?'\u7ECF\u5178':'\u589E\u5F3A(\u9489\u4F4F)');
-  engBtn.title='\u7ECF\u5178: v0.5.11 \u884C\u4E3A\u65CF\uFF08\u8868\u60C5\u9636\u68AF\u6267\u884C+\u96C6\u5408\u9A8C\u8BC1+\u4E09\u5C42\u505C\u8868\uFF0C\u5931\u8D25\u65F6\u64AD\u951\u4F46\u7EE7\u7EED\uFF09\n\u589E\u5F3A: Brio \u9489\u4F4F\u67B6\u6784\uFF08BaseOverride \u63A5\u7BA1\uFF0C\u5931\u8D25\u65F6\u53EF\u80FD\u50F5\u4F4F\uFF09\n\u5207\u6362\u540E\u7ACB\u5373\u751F\u6548';
+  engBtn.textContent='\u5F15\u64CE: '+((store.engine!=='pin')?'\u7ECF\u5178':'\u589E\u5F3A');
+  engBtn.title='\u7ECF\u5178 = v0.5.11 \u884C\u4E3A\u65CF / \u589E\u5F3A = \u9489\u4F4F\u67B6\u6784';
   engBtn.onclick=function(){
     store.engine=(store.engine==='pin')?'classic':'pin';
     try{localStorage.setItem('choreo_engine',store.engine)}catch(e){}
-    apiFetch('/settings/engine',{method:'POST',body:JSON.stringify({pinMode:store.engine==='pin'})}).then(function(){
-      showToast('\u5DF2\u5207\u6362\u5F15\u64CE: '+(store.engine==='pin'?'\u589E\u5F3A':'\u7ECF\u5178'));
-      render();
-    }).catch(function(){showToast('\u5207\u6362\u5931\u8D25')});
+    apiFetch('/settings/engine',{method:'POST',body:JSON.stringify({pinMode:store.engine==='pin'})}).then(function(){render()}).catch(function(){});
   };
-  b.appendChild(engBtn);
   var html='<div>\u72B6\u6001: <span class="v">'+(store.connected?'\u5DF2\u8FDE\u63A5':'\u672A\u8FDE\u63A5')+'</span></div>'+
     '<div>\u821E\u8005: <span class="v">'+store.dancerCount+'</span></div>'+
     '<div>\u5207\u6362: <span class="v">'+sc+'</span></div>'+
@@ -1607,11 +1602,10 @@ function renderBottomBar(){
     '<div>\u5168\u5C40\u6B4C\u8BCD: <span class="v">'+glc+'</span></div>'+
     '<div class="spacer"></div>'+
     '<div id="cursorPos">\u4F4D\u7F6E: 0.0s</div>';
-  var wrap=el('div');wrap.style.cssText='display:flex;align-items:center;gap:10px;flex:1';wrap.innerHTML=html;
-  while(wrap.firstChild)b.appendChild(wrap.firstChild);
+  b.innerHTML=html;
+  b.appendChild(engBtn); // innerHTML 浼氭竻绌哄瓙鑺傜偣锛屾寜閽繀椤诲湪鍏跺悗杩藉姞
   return b;
 }
-
 // Lyrics modal
 function showLyricsModal(){
   var bd=el('div','modal-bg');
