@@ -400,8 +400,22 @@ function sendSeek(t){
   });
 }
 
-function restoreDraft(){
-  try{
+// v0.5.21: 修复存量数据的英文 clip 名 —— 旧版宏解析回填时直接拿命令去斜杠当名字（/bow->"bow"），
+// 已保存进草稿。按命令回查表情表恢复中文名；解析默认的 expression 分类也一并还原真实分类。
+function repairClipNames(){
+  if(!store.emotes||!store.emotes.length)return;
+  var byCmd={};
+  store.emotes.forEach(function(e2){var c=(e2.command||'').toLowerCase();if(c&&c.indexOf(' ')<0&&!byCmd[c])byCmd[c]={name:e2.name,category:e2.category}});
+  store.dancers.forEach(function(d){
+    (d.actionClips||[]).forEach(function(c){
+      // 剥掉变体后缀再查（"/bow motion" -> 查 "/bow"），命令本身保持不变
+      var key=(c.data.command||'').toLowerCase().replace(/\s+(motion|loop|special)\s*$/,'');
+      var m=byCmd[key];
+      if(m){c.data.name=m.name;if(c.data.category==='expression')c.data.category=m.category}
+    });
+  });
+}
+function restoreDraft(){  try{
     var draft=JSON.parse(localStorage.getItem('choreo_draft')||'null');
     if(draft&&draft.dancers&&draft.dancers.length){
       store.dancers=draft.dancers;
@@ -425,6 +439,7 @@ async function init(){
     setLoadingText('加载表情动作...');
     var ed=await apiFetch('/actions/emotes');
     store.emotes=(ed.emotes||[]).map(function(e){e.category=categorizeEmote(e.name,e.category);return e});
+    repairClipNames(); // 恢复存量 clip 的中文名（旧版英文数据修复）
     setLoadingText('加载种族...');
     var rd=await apiFetch('/actions/races');store.races=rd.races||[];
     setLoadingText('加载动作...');
@@ -678,7 +693,13 @@ function generateMacro(di){
   d.switchClips.forEach(function(c){all.push({clip:c,type:'switch'})});
   d.actionClips.forEach(function(c){all.push({clip:c,type:'action'})});
   d.lyricClips.forEach(function(c){all.push({clip:c,type:'lyric'})});
-  if(store.showLyricMacro){store.globalLyrics.forEach(function(c){all.push({clip:c,type:'lyric'})})}
+  if(store.showLyricMacro){store.globalLyrics.forEach(function(c){
+    // 编辑回填后 /say 行已进入该舞者 lyricClips——同刻同名跳过，防止重复输出
+    var dup=false;
+    for(var li=0;li<d.lyricClips.length;li++){var lc=d.lyricClips[li];
+      if(Math.abs(lc.start-c.start)<0.15&&lc.data.name===c.data.name){dup=true;break}}
+    if(!dup)all.push({clip:c,type:'lyric'});
+  })}
   all.sort(function(a,b){return a.clip.start-b.clip.start});
   function fmtWait(d){d=Math.round(d*2)/2;var s=d.toFixed(1);if(s.indexOf('.0')===s.length-2)s=s.substring(0,s.length-2);return '<wait.'+s+'>'}
   // Group clips by same start time (within 0.1s)
@@ -713,7 +734,9 @@ function generateMacro(di){
         if(c.data.jobName)currentJob=c.data.jobName;
         macroLines.push(cmd+waitStr);
       }else if(item.type==='lyric'){
-        macroLines.push(cmd+waitStr);
+        // 文字宏：歌词/文字 clip 无命令时输出 "/say 文字"（此前输出空行 = 文字宏整个丢失）
+        if(!cmd&&c.data.name)cmd='/say '+c.data.name;
+        if(cmd)macroLines.push(cmd+waitStr);
       }else{
         if(c.data.jobName&&c.data.jobName!==currentJob){
           var ji=store.jobMap&&store.jobMap[c.data.jobId];
@@ -756,8 +779,8 @@ function parseMacroToClips(text,di){
     var sp=line.indexOf(' ');
     var cmd=sp>0?line.substring(0,sp).toLowerCase():line.toLowerCase();
     var args=sp>0?line.substring(sp+1).trim():'';
-    // /y or /sh -> lyric
-    if(cmd==='/y'||cmd==='/sh'){
+    // /y or /sh or /say -> lyric
+    if(cmd==='/y'||cmd==='/sh'||cmd==='/say'){
       ly.push({id:store.nextClipId++,start:t,duration:Math.max(0.5,dur),data:{name:args,command:line,category:'lyric',isLyric:true}});
       t+=dur;return
     }
@@ -794,8 +817,20 @@ function parseMacroToClips(text,di){
       t+=dur;return
     }
     // Everything else: emote or system command
-    var name=args||line.replace(/^\//,'').trim()||line;
-    ac.push({id:store.nextClipId++,start:t,duration:Math.max(0.5,dur),data:{name:name,command:line,category:'expression'}});
+    // 名字优先从表情表回查中文（/bow->行礼）；此前直接取命令去斜杠 = 编辑回填后全变英文。
+    // "motion/loop/special" 是变体后缀不是名字（/bow motion 的名字是"行礼"而非"motion"）
+    var name=args||'';
+    if(name==='motion'||name==='loop'||name==='special')name='';
+    var cat='expression';
+    if(!name&&store.emotes){
+      for(var ei=0;ei<store.emotes.length;ei++){
+        if((store.emotes[ei].command||'').toLowerCase()===cmd){
+          name=store.emotes[ei].name;cat=store.emotes[ei].category||'expression';break;
+        }
+      }
+    }
+    if(!name)name=line.replace(/^\//,'').trim()||line;
+    ac.push({id:store.nextClipId++,start:t,duration:Math.max(0.5,dur),data:{name:name,command:line,category:cat}});
     t+=dur;
   });
   d.switchClips=sw;d.actionClips=ac;d.lyricClips=ly;
@@ -936,6 +971,7 @@ function importProject(data){
   store.showLyricMacro=data.showLyricMacro||false;
   store.dancerCount=store.dancers.length;
   store.dancers.forEach(function(d,i){autoFillGaps(i)}); // 导入后动作间空隙补齐
+  repairClipNames(); // 导入数据同样做中文名修复（旧导出文件里的英文名）
   saveHistory();updateTotalDuration();render();showToast('\u5DF2\u5BFC\u5165');
 }
 
