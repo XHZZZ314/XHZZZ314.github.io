@@ -400,7 +400,7 @@ function sendSeek(t){
   });
 }
 
-// v0.5.21: 修复存量数据的英文 clip 名 —— 旧版宏解析回填时直接拿命令去斜杠当名字（/bow->"bow"），
+// v0.5.22: 修复存量数据的英文 clip 名 —— 旧版宏解析回填时直接拿命令去斜杠当名字（/bow->"bow"），
 // 已保存进草稿。按命令回查表情表恢复中文名；解析默认的 expression 分类也一并还原真实分类。
 function repairClipNames(){
   if(!store.emotes||!store.emotes.length)return;

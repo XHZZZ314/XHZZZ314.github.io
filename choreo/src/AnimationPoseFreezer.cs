@@ -483,11 +483,10 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
         {
             // 钉住会话先解除（恢复原 Mode/BaseOverride）—— 后续命令要走正常状态机执行
             Unpin(blendToIdle: false);
-            // 解钉后循环变体（舞蹈/打盹等 loop）还在槽上无限循环，会拒收后续命令与钉住绑定
-            // （压测实测：doze 的 703 循环残留时 carrybook 钉住正确 id 也绑不上）。无条件打断。
-            // v0.5.21：bow 与 pin-learned 的竞争由"pin-learned 轮首次重试延迟 1.6s + 零命令
-            // 重钉"兜底（bow 吞掉绑定后 1.6s 内 re-pin 重新接管，不再依赖跳过打断）
-            TryBreakLingeringLoop(command);
+            // v0.5.22：切换时不再预防性 bow 打断 —— 实测真实使用里槽上常是普通动画
+            // （走路/姿态变体等表外 id），预防性打断 = 几乎每次切换都放 bow（用户实测
+            // "错误特别多"的根源）。改为卡住才打断：重试时刻仍绑不上且槽上是循环
+            // 时间轴才 bow（见 AttachPhase 重试块），正常切换零打断
             SetAllControlSpeeds(1f); // 恢复全部槽速度，让新动作能正常绑定起播
             // 释放旧 emote 状态机：三层停表把旧动画钉得太彻底时，游戏的表情状态机
             // 在等旧动画"播完"才接受新表情（ExecuteEmote 和聊天命令都会被拒 ——
@@ -1108,9 +1107,14 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             // 踩坏后续轮次的钉住（压测实测 mandervilledance 连续误判）。pin-learned 轮：
             // 首次重试延到 1.6s，且重试用零命令的重放（re-pin），不发游戏命令。
             var isPinLearned = _execChannel == "pin-learned";
-            var firstDelay = isPinLearned ? 1.6 : 0.6;
+            var firstDelay = isPinLearned ? 2.2 : 0.8;
             if (Now() - _lastExecTime > firstDelay && _directAttempts < 2 && !_gaveUp)
             {
+                // v0.5.22：卡住才打断 —— 到了重试时刻还绑不上，且槽上卡的是表外循环
+                // 时间轴（doze/舞蹈类残留，非待机），才用 bow 逐出循环调度器；正常切换零打断
+                if (slot0 != 0 && slot0 != 3 && OwnerUnknown(slot0) && IsLoopTimeline(slot0)
+                    && !_idleTimelines.Contains(slot0) && slot0 != _postEmoteBaseCandidate)
+                    TryBreakLingeringLoop(_pendingCommand);
                 _directAttempts++;
                 if (isPinLearned && _directAttempts == 1)
                 {
@@ -1309,11 +1313,33 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
     }
 
     /// <summary>
+    /// id 是否为循环时间轴（ActionTimeline 表 IsLoop，带缓存）。打断器只对真循环开火 ——
+    /// 表外普通动画（走路/姿态变体）会自己结束，打断它们只会制造无谓的 bow。
+    /// </summary>
+    private bool IsLoopTimeline(ushort id)
+    {
+        if (id == 0 || id == 3) return false;
+        if (_loopTimelineCache.TryGetValue(id, out var v)) return v;
+        var r = false;
+        try
+        {
+            var sheet = _dataManager.GetExcelSheet<ActionTimeline>();
+            var row = sheet.GetRow(id);
+            r = row.RowId != 0 && row.IsLoop;
+        }
+        catch { }
+        _loopTimelineCache[id] = r;
+        return r;
+    }
+    private static readonly ConcurrentDictionary<ushort, bool> _loopTimelineCache = new();
+
+    /// <summary>
     /// 打断残留的 motion 循环变体（表外 id 在槽上无限循环不去）。游戏的 motion 通道对
     /// "已有 motion 在播"去重/拒收，且部分表情命令也进不去 —— /breakdance 的循环占用
     /// 槽位后，后续命令全部落空（实测 /tremble 5s+ 无绑定）。PlayActionTimeline 压不住
     /// （调度器下轮又绑回），PlayTimeline(3) 实测直接崩游戏 —— 唯一实测有效的是走表情
     /// 通道放一个良性一次性动作（/bow），表情系统接管基础槽后循环调度器被逐出。
+    /// v0.5.22：只在确认卡住时调用（重试时刻），且只对 IsLoop 的表外 id 开火。
     /// </summary>
     private void TryBreakLingeringLoop(string? forCommand)
     {
@@ -1321,7 +1347,9 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
         {
             var cur = CurrentSlot0Timeline();
             if (cur == 0 || cur == 3 || cur == _postEmoteBaseCandidate || !OwnerUnknown(cur)) return;
+            if (_idleTimelines.Contains(cur)) return; // 待机集合（含循环型待机变体如 34）—— 新命令自己会绑上
             if (forCommand != null && Awaiting(forCommand, cur)) return; // 就是我们目标的动画
+            if (!IsLoopTimeline(cur)) return; // 普通动画自己会结束 —— 不打断（曾对走路动画狂放 bow）
             if (_bowEmoteId == 0 && _emoteMap != null && _emoteMap.TryGetValue("/bow", out var bowIds))
                 _bowEmoteId = bowIds.Emote;
             if (_bowEmoteId == 0) return;

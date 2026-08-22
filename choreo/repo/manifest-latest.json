@@ -2,7 +2,7 @@
   "Author": "XHZZZ314",
   "Name": "ChoreoHelper",
   "InternalName": "ChoreoHelper",
-  "AssemblyVersion": "0.5.21.0",
+  "AssemblyVersion": "0.5.22.0",
   "Description": "FF14 Choreography Helper - Timeline Editor with HTTP API",
   "ApplicableVersion": "any",
   "DalamudApiLevel": 15,
@@ -15,5 +15,5 @@
   "DownloadLinkInstall": "https://xhzzz314.github.io/choreo/repo/latest.zip",
   "DownloadLinkUpdate": "https://xhzzz314.github.io/choreo/repo/latest.zip",
   "DownloadLinkTesting": "https://xhzzz314.github.io/choreo/repo/latest.zip",
-  "LastUpdated": "2026-08-22 20:40:00Z"
+  "LastUpdated": "2026-08-22 21:20:00Z"
 }
