@@ -141,7 +141,7 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
     private double _diagLastWaitAt;    // 诊断去重：canonWait 上次记录时刻
     private bool _observedRowMerged;   // 已把游戏解析出的变体行合并进等待集合（本命令）
     private double _introBoundAt = -1; // 引入段绑定时刻（-1=未绑定）
-    private float _introDur;           // 引入段时长快照（读数最大值自修正）
+    private int _introNotPlayingFrames; // 引入段"不在播"连续帧数（≥2 = 播完，去抖垃圾读数）
     private double _introEndedAt = -1; // 引入段播完时刻（-1=引入段还在播/未开始等）
     private uint _lastMergeRejectKey;  // 诊断去重：上次拒绝合并的行号
     private ushort[] _awaitEmoteFamily = Array.Empty<ushort>(); // 同命令全部表情行号（状态机确认用族匹配）
@@ -543,7 +543,7 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             _gaveUp = false;
             _observedRowMerged = false;
             _introBoundAt = -1;
-            _introDur = 0;
+            _introNotPlayingFrames = 0;
             _introEndedAt = -1;
             var direct = TryResolveEmote(command, out var ids);
             if (direct)
@@ -1034,43 +1034,47 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             else if (_sawFamSinceExec && CurrentEmoteId() != 0) _chainFromFam = true;
 
             // v0.5.24 引入段等待：槽上是表内辅助变体（≠ [0] 主轴）时，游戏的起播顺序是
-            // 先绑引入段再换绑主轴（0.3-2.5s）。此刻不挂载（定格在引入段 = 错误动作）、
-            // 不学习、不重试（重发命令会重起引入段 = 永远等不到主轴）。仅表内 id 等待
-            // （学习到的表外变体不受影响）；3s 超时回退旧挂载（防御表数据不按惯例的行）。
-            // v0.5.26：等待窗口跟随引入段实际播放进度（v0.5.24 的固定 3s 对练拳 ~3s /
-            // 游侠姿势 5.9s 的引入段会在换绑前超时 → 挂到引入段 = 错姿势，或拖快了干脆
-            // 挂不上 = "被吞"）。过渡期探针的时长读数不可靠（实测先读 2.33 稳定后才 5.9），
-            // 用时间锚定：绑定时记时刻 + 时长快照（取后续读数最大值自修正），播完给 0.45s
-            // 换绑机会；仍没换到主轴 = 引入段即本体（姿势类），挂载并记忆 IntroIsFinal。
-            if (_introBoundAt < 0 && slot0 != 0 && slot0 != _canonicalTimeline
-                && _canonicalTimeline != 0 && !_idleTimelines.Contains(slot0)
-                && Array.IndexOf(_awaitTimelineIds, slot0) >= 0)
-            {
-                _introBoundAt = Now();
-                _introDur = Math.Max(0.5f, d);
-            }
-            if (_introBoundAt > 0 && d > _introDur && d < 15f) _introDur = d; // 读数自修正（钳制：垃圾读数不放大等待）
-            var introPlayingT = _introBoundAt > 0 && Now() - _introBoundAt < Math.Min(_introDur + 0.6, 12.0); // 硬上限 12s
+            // 先绑引入段再换绑主轴。此刻不挂载（定格在引入段 = 错误动作）、不学习、
+            // 不重试（重发命令会重起引入段 = 永远等不到主轴）。仅表内 id 等待。
+            // v0.5.28：逐帧实时判定引入段是否在播（localTime < 时长-0.06），连续 2 帧播完才算
+            // 播完（防过渡期垃圾读数单帧误判），播完给 0.45s 换绑机会，8s 硬上限。
+            // （v0.5.26 的"时长快照取最大值"会把过渡期垃圾高读数锁死 —— 实测黄金之舞的
+            // 引入段被读到 12s（真实 ~2.5s），等待永不结束 → 不挂载也不重试 = 拖动没动作）
             var introFinalKnown = _pendingCommand != null
                 && IntroIsFinalTimelines.TryGetValue(_pendingCommand, out var ifk) && ifk;
-            var canonWait = !introFinalKnown && _canonicalTimeline != 0 && slot0 != 0 && slot0 != _canonicalTimeline
+            var memberWait = !introFinalKnown && _canonicalTimeline != 0 && slot0 != 0 && slot0 != _canonicalTimeline
                 && !_idleTimelines.Contains(slot0)
-                && Array.IndexOf(_awaitTimelineIds, slot0) >= 0
-                && (introPlayingT || (_introEndedAt > 0 && Now() - _introEndedAt < 0.45));
+                && Array.IndexOf(_awaitTimelineIds, slot0) >= 0;
+            var canonWait = false;
             var introDoneThisFrame = false;
-            if (canonWait)
+            if (memberWait)
             {
-                if (!introPlayingT && _introEndedAt < 0) _introEndedAt = Now();
+                if (_introBoundAt < 0)
+                {
+                    _introBoundAt = Now();
+                    _introNotPlayingFrames = 0;
+                    _introEndedAt = -1;
+                }
+                var livePlaying = d > 0.05f && probe0.LocalTime < d - 0.06f;
+                if (livePlaying) _introNotPlayingFrames = 0; else _introNotPlayingFrames++;
+                if (_introEndedAt < 0)
+                {
+                    // 连续 2 帧不在播（或硬超时 8s）= 引入段播完，进入换绑宽限
+                    if (_introNotPlayingFrames >= 2 || Now() - _introBoundAt > 8.0) _introEndedAt = Now();
+                }
+                if (_introEndedAt < 0 || Now() - _introEndedAt < 0.45) canonWait = true;
+                else introDoneThisFrame = true;
             }
             else
             {
-                introDoneThisFrame = _introEndedAt >= 0;
+                _introBoundAt = -1;
+                _introNotPlayingFrames = 0;
                 _introEndedAt = -1;
             }
             if (canonWait && (slot0 != _diagLastWaitSlot || Now() - _diagLastWaitAt > 0.5f))
             {
                 _diagLastWaitSlot = slot0; _diagLastWaitAt = Now();
-                Diag($"canonWait: slot0={slot0} canon={_canonicalTimeline} ch={_execChannel} emote={CurrentEmoteId()} elapsed={Now() - _introBoundAt:F2}/{_introDur:F2}");
+                Diag($"canonWait: slot0={slot0} canon={_canonicalTimeline} ch={_execChannel} emote={CurrentEmoteId()} lt={probe0.LocalTime:F2}/{d:F2} notPlaying={_introNotPlayingFrames}");
             }
 
             // 面部表情类（表预测）：执行后 0.3s 即完成 —— 不等主槽绑定（等不到）、不重试
