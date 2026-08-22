@@ -121,6 +121,23 @@ public sealed class HttpServer : IDisposable
                     try { postJson = HandlePlaybackStop(); }
                     finally { _playbackGate.Release(); }
                 }
+                else if (path == "/settings/engine")
+                {
+                    // 双引擎切换：经典（v0.5.11 行为族）/ 增强（Brio 钉住架构）
+                    try
+                    {
+                        using var reader = new StreamReader(ctx.Request.InputStream);
+                        var body = reader.ReadToEnd();
+                        var req = System.Text.Json.JsonDocument.Parse(body);
+                        if (req.RootElement.TryGetProperty("pinMode", out var pm))
+                        {
+                            AnimationPoseFreezer.PinModeEnabled = pm.GetBoolean();
+                            _log.Information("Engine mode set: {m}", AnimationPoseFreezer.PinModeEnabled ? "pin" : "classic");
+                        }
+                    }
+                    catch (Exception ex) { _log.Error(ex, "Parse engine setting failed"); }
+                    postJson = "{\"pinMode\":" + (AnimationPoseFreezer.PinModeEnabled ? "true" : "false") + "}";
+                }
                 else { AddCorsHeaders(ctx.Response); ctx.Response.StatusCode = 404; ctx.Response.Close(); return; }
                 ctx.Response.ContentType = "application/json; charset=utf-8";
                 AddCorsHeaders(ctx.Response);
@@ -155,6 +172,7 @@ public sealed class HttpServer : IDisposable
                     "/actions/measured-durations" => GetMeasuredDurationsJson(),
                     "/debug/animstate" => _freezer?.GetDebugAnimState() ?? "{\"error\":\"no freezer\"}",
                     "/debug/poke" => _freezer?.DebugPoke(query["action"]) ?? "{\"error\":\"no freezer\"}",
+                    "/settings/engine" => "{\"pinMode\":" + (AnimationPoseFreezer.PinModeEnabled ? "true" : "false") + "}",
                     "/debug/emotefamily" => _freezer?.GetDebugEmoteFamily(query["cmd"],
                         (query["ids"] ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries)
                             .Select(s => ushort.TryParse(s.Trim(), out var v) ? v : (ushort)0).Where(v => v != 0).ToArray())

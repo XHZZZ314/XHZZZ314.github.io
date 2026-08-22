@@ -38,8 +38,8 @@ public sealed class Plugin : IDalamudPlugin
             _playback = new PlaybackManager(Log, Framework, _executor, _freezer);
             _httpServer = new HttpServer(DataManager, Log, _previewer, _playback, _freezer);
             _httpServer.Start();
-            Log.Information("ChoreoHelper v0.5.22 started. API: http://localhost:48794/");
-            Chat.Print("ChoreoHelper v0.5.22 已启动", "队列执行模式 + 手动 Utf8String");
+            Log.Information("ChoreoHelper v0.5.23 started. API: http://localhost:48794/");
+            Chat.Print("ChoreoHelper v0.5.23 已启动", "队列执行模式 + 手动 Utf8String");
         }
         catch (Exception ex)
         {

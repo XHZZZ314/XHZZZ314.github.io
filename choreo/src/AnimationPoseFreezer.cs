@@ -584,23 +584,32 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                 }
                 else if (hasLearned)
                 {
-                    // 学习过的 id → 直接钉住（Brio 架构）：BaseOverride+AnimLock 立即接管基础槽，
-                    // 不再走表情状态机（无忙窗口、无结束计时器、无姿态锁）—— 回拖命中已学命令瞬时且确定
-                    var pinOk = false;
-                    if (LearnedTimelines.TryGetValue(command, out var lrn2))
+                    if (PinModeEnabled)
                     {
-                        lock (lrn2)
+                        // 学习过的 id → 直接钉住（Brio 架构）：BaseOverride+AnimLock 立即接管基础槽，
+                        // 不再走表情状态机（无忙窗口、无结束计时器、无姿态锁）—— 回拖命中已学命令瞬时且确定
+                        var pinOk = false;
+                        if (LearnedTimelines.TryGetValue(command, out var lrn2))
                         {
-                            foreach (var id in lrn2)
+                            lock (lrn2)
                             {
-                                if (!OwnerAllows(command, id) || id == 3 || _idleTimelines.Contains(id)) continue;
-                                if (TryPinTimeline(id, triggerBind: true)) { pinOk = true; break; }
+                                foreach (var id in lrn2)
+                                {
+                                    if (!OwnerAllows(command, id) || id == 3 || _idleTimelines.Contains(id)) continue;
+                                    if (TryPinTimeline(id, triggerBind: true)) { pinOk = true; break; }
+                                }
                             }
                         }
+                        if (pinOk) _execChannel = "pin-learned";
+                        else
+                        {
+                            TryPlayTimelinePreferred(command);
+                            _execChannel = "learned";
+                        }
                     }
-                    if (pinOk) _execChannel = "pin-learned";
                     else
                     {
+                        // 经典引擎（v0.5.11 行为族）：直接强制学习过的 id，走集合验证挂载
                         TryPlayTimelinePreferred(command);
                         _execChannel = "learned";
                     }
@@ -982,9 +991,10 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                     KnownAttachDurations[_pendingCommand!] = d;
                     if (_pendingCommand != null && _directAttempts >= 2)
                         MotionPreferred[_pendingCommand] = true;
-                    // 挂载即钉住（v0.5.18）：动画已绑好，只接管防换绑 —— 表情结束计时器
-                    // 从此无效（黄金之舞播到一半被状态机收走 = 半程失效的根因）
-                    TryPinTimeline(slot0, triggerBind: false);
+                    // 挂载即钉住（仅增强引擎，v0.5.18）：动画已绑好，只接管防换绑 —— 表情结束
+                    // 计时器从此无效（黄金之舞播到一半被状态机收走 = 半程失效的根因）
+                    if (PinModeEnabled)
+                        TryPinTimeline(slot0, triggerBind: false);
                     _log.Information("Freeze attached direct (tl={id}, dur {d:F2}s, pinned={p})", slot0, d, _hasPin);
                 }
                 return;
@@ -1010,12 +1020,12 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                 _log.Information("Freeze learned timeline {id} for {cmd} (state-confirmed)", slot0, _pendingCommand);
                 return;
             }
-            // 学习路径 A'（状态转移确认，v0.5.20）：执行前 ResetEmoteState 清零 EmoteId，
+            // 学习路径 A'（状态转移确认，仅增强引擎）：执行前 ResetEmoteState 清零 EmoteId，
             // 之后 EmoteId 变为非 0 = 游戏接受了<b>某条</b>表情并绑定 —— 但解析出的变体行
             // 可能不在 TextCommand 族内（/gcsalute 基础行解析到行 56，族匹配 A 永远失败）。
             // 证据：EmoteId 0→非 0 转移（我们自己的执行被接受）+ 槽0 换成表外新值 + 稳定。
-            // 独占所有权兜底防跨命令污染。
-            if (CurrentEmoteId() != 0 && CanLearnTimeline(slot0) && OwnerUnknown(slot0))
+            // 独占所有权兜底防跨命令污染。（经典引擎不用 —— 保持 v0.5.11 严格学习语义）
+            if (PinModeEnabled && CurrentEmoteId() != 0 && CanLearnTimeline(slot0) && OwnerUnknown(slot0))
             {
                 if (slot0 == _stCandidate) _stCandidateFrames++;
                 else { _stCandidate = slot0; _stCandidateFrames = 1; }
@@ -1030,12 +1040,12 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                 }
             }
             else { _stCandidate = 0; _stCandidateFrames = 0; }
-            // 学习路径 A3（链式确认，v0.5.19）：黄金之舞等链式舞蹈 —— 游戏把我们的表情（族内）
+            // 学习路径 A3（链式确认，仅增强引擎）：黄金之舞等链式舞蹈 —— 游戏把我们的表情（族内）
             // 链到族外 EmoteId 与表外时间轴（如 3770/3771，不在 Emote 表 [0..5]），A/B/C 的
             // 族匹配与变化检测全部够不着。签名：执行被接受过（见过族内）→ EmoteId 已链出族 +
             // 槽0 换成表外新值且稳定 ≥5 帧。被拒命令（从未见过族内）绝无可能触发 = 无污染。
             // give-up 后仍每帧观察（链可能在数秒后才发生），零新增命令 = 无风暴。
-            if (CanLearnTimeline(slot0) && OwnerUnknown(slot0) && _chainFromFam)
+            if (PinModeEnabled && CanLearnTimeline(slot0) && OwnerUnknown(slot0) && _chainFromFam)
             {
                 if (slot0 == _chainCandidate) _chainCandidateFrames++;
                 else { _chainCandidate = slot0; _chainCandidateFrames = 1; }
@@ -1110,13 +1120,14 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             var firstDelay = isPinLearned ? 2.2 : 0.8;
             if (Now() - _lastExecTime > firstDelay && _directAttempts < 2 && !_gaveUp)
             {
-                // v0.5.22：卡住才打断 —— 到了重试时刻还绑不上，且槽上卡的是表外循环
-                // 时间轴（doze/舞蹈类残留，非待机），才用 bow 逐出循环调度器；正常切换零打断
-                if (slot0 != 0 && slot0 != 3 && OwnerUnknown(slot0) && IsLoopTimeline(slot0)
+                // v0.5.22：卡住才打断（仅增强引擎；经典引擎无钉住，循环残留由重试阶梯处理
+                // —— v0.5.11 行为族没有打断器）—— 到了重试时刻还绑不上，且槽上卡的是表外
+                // 循环时间轴（doze/舞蹈类残留，非待机），才用 bow 逐出循环调度器
+                if (PinModeEnabled && slot0 != 0 && slot0 != 3 && OwnerUnknown(slot0) && IsLoopTimeline(slot0)
                     && !_idleTimelines.Contains(slot0) && slot0 != _postEmoteBaseCandidate)
                     TryBreakLingeringLoop(_pendingCommand);
                 _directAttempts++;
-                if (isPinLearned && _directAttempts == 1)
+                if (PinModeEnabled && isPinLearned && _directAttempts == 1)
                 {
                     // v0.5.21 终版：pin-learned 卡住（循环残留占槽，重钉也绑不上）→ 解钉后
                     // 直接走表情通道 —— ExecuteEmote 由游戏换绑，必定能逐出循环调度器
@@ -1363,9 +1374,9 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
     private void ExecuteMotionFallback()
     {
         if (string.IsNullOrEmpty(_pendingCommand)) return;
-        // 先打断残留循环（bow）—— bow 的忙窗口会吞掉同帧发的 motion，1.6s 后由补发机制重发
-        TryBreakLingeringLoop(_pendingCommand);
-        _motionResendAt = Now() + 1.6;
+        // 先打断残留循环（bow，仅增强引擎）—— bow 的忙窗口会吞掉同帧发的 motion，1.6s 后由补发机制重发
+        if (PinModeEnabled) TryBreakLingeringLoop(_pendingCommand);
+        if (PinModeEnabled) _motionResendAt = Now() + 1.6;
         // 快照在打断之后取：循环打断→新绑定后，motion 落地的"槽0 变成 ≠ 快照"证据才成立
         var cur2 = CurrentSlot0Timeline();
         if (cur2 != 0) _motionSentSlot0 = cur2;
@@ -1724,6 +1735,11 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
         }
     }
 
+    // v0.5.23 双引擎：经典（v0.5.11 行为族：表情阶梯执行+集合验证+三层停表，无任何
+    // Mode/BaseOverride 操作，失败模式是"播错但继续"）/ 增强（Brio 钉住架构，失败模式
+    // 是"僵死"）。默认经典 —— 用户实测确认过的行为族。网页可切换。
+    public static bool PinModeEnabled { get; set; } = false;
+
     /// <summary>调试端点数据：槽0时间轴/表情状态/绑定时长（诊断动画通道行为）。</summary>
     public string GetDebugAnimState()    {
         try
@@ -1741,6 +1757,7 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                 previewMode = _previewMode,
                 pendingCommand = _pendingCommand,
                 attached = _attached,
+                pinMode = PinModeEnabled,
                 hasPin = _hasPin,
                 pinnedTimelineId = _pinnedTimelineId,
                 baseOverride = (TryGetLocalCharacter(out var dbgChara) ? dbgChara->Timeline.BaseOverride : (ushort)0),
