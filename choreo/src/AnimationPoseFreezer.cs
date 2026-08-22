@@ -69,6 +69,7 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
     // 槽0 是待机 —— 学习路径会把待机 id 学进缓存（曾实际发生：learned timeline 3）。
     // 污染后该表情永远验证"通过"并钉在待机上 = 吞动作；且越拖污染越多。
     private readonly HashSet<ushort> _idleTimelines = new();
+    private double _lastIdleObserve;
     private bool _wasEmoting;                  // 表情状态机下降沿检测（回归一致性待机采集）
     private double _postEmoteCheckAt = -1;     // 表情结束后 1s 的回归采样时刻（-1=无任务）
     private ushort _postEmoteBaseCandidate;    // 上次表情结束后的槽0 基线候选
@@ -77,6 +78,8 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
     private int _learnCandidateFrames;
     private ushort _residualCandidate;   // 残留确认学习的候选 id（连续稳定帧计数）
     private int _residualCandidateFrames;
+    private ushort _idleCandidate;       // (已废弃 v0.5.19：待机采集改为表情回归一致性)
+    private int _idleCandidateFrames;
     private ushort _chainCandidate;      // 链式学习（A3）的候选 id（连续稳定帧计数）
     private int _chainCandidateFrames;
     private ushort _stCandidate;         // 状态转移学习（A'）的候选 id（连续稳定帧计数）
@@ -140,8 +143,9 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
     private ushort _diagLastWaitSlot;  // 诊断去重：canonWait 上次记录的槽0 值
     private double _diagLastWaitAt;    // 诊断去重：canonWait 上次记录时刻
     private bool _observedRowMerged;   // 已把游戏解析出的变体行合并进等待集合（本命令）
+    private double _observedRowAt;     // 变体行合并时刻（canonWait 窗口顺延）
     private double _introBoundAt = -1; // 引入段绑定时刻（-1=未绑定）
-    private int _introNotPlayingFrames; // 引入段"不在播"连续帧数（≥2 = 播完，去抖垃圾读数）
+    private float _introDur;           // 引入段时长快照（读数最大值自修正）
     private double _introEndedAt = -1; // 引入段播完时刻（-1=引入段还在播/未开始等）
     private uint _lastMergeRejectKey;  // 诊断去重：上次拒绝合并的行号
     private ushort[] _awaitEmoteFamily = Array.Empty<ushort>(); // 同命令全部表情行号（状态机确认用族匹配）
@@ -161,6 +165,7 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
     private double _lastExecTime;         // 上次执行命令时刻（秒），自愈重发最小间隔用
     private float _lastWrittenTime = -1f; // 上次成功写入的 LocalTime
     private double _lastProbe;            // 上次低频绑定安全检查时刻
+    private double _lastLog;              // 日志限流
 
     // 拖动流分离：前端拖动每 50-70ms 一发 seek，若每个中间命令都全量执行（快进释放+执行），
     // 一秒十几个动作互相打断 → 排队风暴+动画错乱（回拖"动作丢失/错误"主因）。
@@ -543,7 +548,7 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             _gaveUp = false;
             _observedRowMerged = false;
             _introBoundAt = -1;
-            _introNotPlayingFrames = 0;
+            _introDur = 0;
             _introEndedAt = -1;
             var direct = TryResolveEmote(command, out var ids);
             if (direct)
@@ -731,14 +736,6 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
 
     private void OnFrameworkUpdate(IFramework framework)
     {
-        // 学习表低频落盘（v0.5.27）：变更后 ≥30s 写一次盘，Dispose 兜底再写一次
-        if (_learningDirty && _lastLearningSave >= 0 && Now() - _lastLearningSave > 30)
-        {
-            _learningDirty = false;
-            _lastLearningSave = Now();
-            SaveLearningState();
-        }
-
         // 待机时间轴观察（学习排除集合）—— 预览未激活时低频采样
         ObserveIdleTimeline();
 
@@ -1034,47 +1031,45 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             else if (_sawFamSinceExec && CurrentEmoteId() != 0) _chainFromFam = true;
 
             // v0.5.24 引入段等待：槽上是表内辅助变体（≠ [0] 主轴）时，游戏的起播顺序是
-            // 先绑引入段再换绑主轴。此刻不挂载（定格在引入段 = 错误动作）、不学习、
-            // 不重试（重发命令会重起引入段 = 永远等不到主轴）。仅表内 id 等待。
-            // v0.5.28：逐帧实时判定引入段是否在播（localTime < 时长-0.06），连续 2 帧播完才算
-            // 播完（防过渡期垃圾读数单帧误判），播完给 0.45s 换绑机会，8s 硬上限。
-            // （v0.5.26 的"时长快照取最大值"会把过渡期垃圾高读数锁死 —— 实测黄金之舞的
-            // 引入段被读到 12s（真实 ~2.5s），等待永不结束 → 不挂载也不重试 = 拖动没动作）
+            // 先绑引入段再换绑主轴（0.3-2.5s）。此刻不挂载（定格在引入段 = 错误动作）、
+            // 不学习、不重试（重发命令会重起引入段 = 永远等不到主轴）。仅表内 id 等待
+            // （学习到的表外变体不受影响）；3s 超时回退旧挂载（防御表数据不按惯例的行）。
+            // v0.5.26：等待窗口跟随引入段实际播放进度（v0.5.24 的固定 3s 对练拳 ~3s /
+            // 游侠姿势 5.9s 的引入段会在换绑前超时 → 挂到引入段 = 错姿势，或拖快了干脆
+            // 挂不上 = "被吞"）。过渡期探针的时长读数不可靠（实测先读 2.33 稳定后才 5.9），
+            // 用时间锚定：绑定时记时刻 + 时长快照（取后续读数最大值自修正），播完给 0.45s
+            // 换绑机会；仍没换到主轴 = 引入段即本体（姿势类），挂载并记忆 IntroIsFinal。
+            if (_introBoundAt < 0 && slot0 != 0 && slot0 != _canonicalTimeline
+                && _canonicalTimeline != 0 && !_idleTimelines.Contains(slot0)
+                && Array.IndexOf(_awaitTimelineIds, slot0) >= 0)
+            {
+                _introBoundAt = Now();
+                _introDur = Math.Max(0.5f, d);
+            }
+            if (_introBoundAt > 0 && d > _introDur) _introDur = d; // 绑定稳定后时长读数修正
+            // 0.5.26.2 唯一安全改动：12s 硬上限 —— 过渡期垃圾时长读数（实测黄金之舞被读到 12s）
+            // 会把等待锁死到垃圾长度；上限兜底后最坏多等 12s 也必然放行挂载/重试
+            var introPlayingT = _introBoundAt > 0 && Now() - _introBoundAt < Math.Min(_introDur + 0.6, 12.0);
             var introFinalKnown = _pendingCommand != null
                 && IntroIsFinalTimelines.TryGetValue(_pendingCommand, out var ifk) && ifk;
-            var memberWait = !introFinalKnown && _canonicalTimeline != 0 && slot0 != 0 && slot0 != _canonicalTimeline
+            var canonWait = !introFinalKnown && _canonicalTimeline != 0 && slot0 != 0 && slot0 != _canonicalTimeline
                 && !_idleTimelines.Contains(slot0)
-                && Array.IndexOf(_awaitTimelineIds, slot0) >= 0;
-            var canonWait = false;
+                && Array.IndexOf(_awaitTimelineIds, slot0) >= 0
+                && (introPlayingT || (_introEndedAt > 0 && Now() - _introEndedAt < 0.45));
             var introDoneThisFrame = false;
-            if (memberWait)
+            if (canonWait)
             {
-                if (_introBoundAt < 0)
-                {
-                    _introBoundAt = Now();
-                    _introNotPlayingFrames = 0;
-                    _introEndedAt = -1;
-                }
-                var livePlaying = d > 0.05f && probe0.LocalTime < d - 0.06f;
-                if (livePlaying) _introNotPlayingFrames = 0; else _introNotPlayingFrames++;
-                if (_introEndedAt < 0)
-                {
-                    // 连续 2 帧不在播（或硬超时 8s）= 引入段播完，进入换绑宽限
-                    if (_introNotPlayingFrames >= 2 || Now() - _introBoundAt > 8.0) _introEndedAt = Now();
-                }
-                if (_introEndedAt < 0 || Now() - _introEndedAt < 0.45) canonWait = true;
-                else introDoneThisFrame = true;
+                if (!introPlayingT && _introEndedAt < 0) _introEndedAt = Now();
             }
             else
             {
-                _introBoundAt = -1;
-                _introNotPlayingFrames = 0;
+                introDoneThisFrame = _introEndedAt >= 0;
                 _introEndedAt = -1;
             }
             if (canonWait && (slot0 != _diagLastWaitSlot || Now() - _diagLastWaitAt > 0.5f))
             {
                 _diagLastWaitSlot = slot0; _diagLastWaitAt = Now();
-                Diag($"canonWait: slot0={slot0} canon={_canonicalTimeline} ch={_execChannel} emote={CurrentEmoteId()} lt={probe0.LocalTime:F2}/{d:F2} notPlaying={_introNotPlayingFrames}");
+                Diag($"canonWait: slot0={slot0} canon={_canonicalTimeline} ch={_execChannel} emote={CurrentEmoteId()} elapsed={Now() - _introBoundAt:F2}/{_introDur:F2}");
             }
 
             // 面部表情类（表预测）：执行后 0.3s 即完成 —— 不等主槽绑定（等不到）、不重试
@@ -1119,7 +1114,6 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                     {
                         IntroIsFinalTimelines[_pendingCommand] = true;
                         Diag($"intro-final learned: {_pendingCommand} tl={slot0} (no main transition after intro end)");
-                        MarkLearningDirty();
                     }
                 }
                 return;
@@ -1623,7 +1617,6 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             var list = LearnedTimelines.GetOrAdd(command, _ => new List<ushort>());
             lock (list) { if (!list.Contains(timelineId)) list.Add(timelineId); } // 有序：最近学习的在重试轮换中优先
             Diag($"learn {command} -> {timelineId}");
-            MarkLearningDirty();
         }
     }
 
@@ -1705,6 +1698,7 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                 }
             }
             _observedRowMerged = true;
+            _observedRowAt = Now();
             ResolvedEmoteRow[_pendingCommand] = (ushort)rowId;
             var merged = new List<ushort>(_awaitTimelineIds);
             foreach (var t in list) if (!merged.Contains(t)) merged.Add(t);
@@ -1719,7 +1713,6 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                         polluted.RemoveAll(id => id != _canonicalTimeline && Array.IndexOf(_awaitTimelineIds, id) >= 0);
             }
             Diag($"merged variant row {rowId} (src={rowIdOrTimeline}): canon={_canonicalTimeline} set=[{string.Join(",", _awaitTimelineIds)}]");
-            MarkLearningDirty();
             return true;
         }
         catch { return false; }
@@ -2033,105 +2026,9 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
         }
     }
 
-    // ---------- 学习表持久化（v0.5.27）：重启免首轮慢 ----------
-    // 学习/规范/姿势即本体/动作偏好/时长基准写 JSON（插件配置目录），Dispose 或变更后
-    // 低频落盘。运行时观察类（待机集合/解析行/等待集合）不持久 —— 启动后自然重建。
-    private static readonly object SaveLock = new();
-    private static double _lastLearningSave = -1;      // 上次落盘时刻（-1=未加载过）
-    private static bool _learningDirty;
-
-    private static string LearningStatePath()
-    {
-        var dir = Plugin.PluginInterface?.GetPluginConfigDirectory();
-        if (string.IsNullOrEmpty(dir)) return string.Empty;
-        return System.IO.Path.Combine(dir, "learning.json");
-    }
-
-    public void LoadLearningState()
-    {
-        try
-        {
-            var path = LearningStatePath();
-            if (string.IsNullOrEmpty(path) || !System.IO.File.Exists(path)) return;
-            var json = System.IO.File.ReadAllText(path);
-            var doc = System.Text.Json.JsonDocument.Parse(json);
-            var root = doc.RootElement;
-            if (root.TryGetProperty("learned", out var learnedEl))
-                foreach (var p in learnedEl.EnumerateObject())
-                {
-                    var list = new List<ushort>();
-                    foreach (var v in p.Value.EnumerateArray())
-                    {
-                        var id = (ushort)v.GetInt16();
-                        if (id != 0 && id != 3 && !list.Contains(id)) list.Add(id);
-                    }
-                    if (list.Count > 0) LearnedTimelines[p.Name] = list;
-                }
-            if (root.TryGetProperty("canonical", out var canonEl))
-                foreach (var p in canonEl.EnumerateObject())
-                    if (p.Value.TryGetInt32(out var c) && c > 0)
-                        CanonicalTimelines[p.Name] = (ushort)c;
-            if (root.TryGetProperty("introFinal", out var ifEl))
-                foreach (var p in ifEl.EnumerateObject())
-                    if (p.Value.GetBoolean()) IntroIsFinalTimelines[p.Name] = true;
-            if (root.TryGetProperty("motionPreferred", out var mpEl))
-                foreach (var p in mpEl.EnumerateObject())
-                    if (p.Value.GetBoolean()) MotionPreferred[p.Name] = true;
-            if (root.TryGetProperty("durations", out var durEl))
-                foreach (var p in durEl.EnumerateObject())
-                    if (p.Value.TryGetSingle(out var dv) && dv > 0.05f)
-                        KnownAttachDurations[p.Name] = dv;
-            _lastLearningSave = Now();
-            _log.Information("Learning state loaded: {l} learned, {c} canonical, {i} intro-final", LearnedTimelines.Count, CanonicalTimelines.Count, IntroIsFinalTimelines.Count);
-        }
-        catch (Exception ex) { _log.Warning("LoadLearningState failed: {m}", ex.Message); }
-    }
-
-    public void SaveLearningState()
-    {
-        try
-        {
-            var path = LearningStatePath();
-            if (string.IsNullOrEmpty(path)) return;
-            var data = new
-            {
-                version = 1,
-                learned = LearnedTimelines.ToDictionary(kv => kv.Key, kv => kv.Value.ToArray()),
-                canonical = CanonicalTimelines.ToDictionary(kv => kv.Key, kv => kv.Value),
-                introFinal = IntroIsFinalTimelines.ToDictionary(kv => kv.Key, kv => kv.Value),
-                motionPreferred = MotionPreferred.ToDictionary(kv => kv.Key, kv => kv.Value),
-                durations = KnownAttachDurations.ToDictionary(kv => kv.Key, kv => kv.Value)
-            };
-            lock (SaveLock)
-            {
-                System.IO.File.WriteAllText(path, System.Text.Json.JsonSerializer.Serialize(data));
-            }
-        }
-        catch (Exception ex) { _log.Warning("SaveLearningState failed: {m}", ex.Message); }
-    }
-
-    /// <summary>标记学习数据已变更（帧循环低频落盘，避免每次学习都写盘）。</summary>
-    private static void MarkLearningDirty() { _learningDirty = true; }
-
-    /// <summary>清空全部学习数据（内存 + 磁盘）—— 诊断/用户重置用。</summary>
-    public string ClearLearning()
-    {
-        LearnedTimelines.Clear();
-        CanonicalTimelines.Clear();
-        IntroIsFinalTimelines.Clear();
-        MotionPreferred.Clear();
-        KnownAttachDurations.Clear();
-        ResolvedTimelines.Clear();
-        ResolvedEmoteRow.Clear();
-        SaveLearningState();
-        Diag("learning state cleared");
-        return "{\"done\":\"learning cleared\"}";
-    }
-
     public void Dispose()
     {
         StopPreview();
         _framework.Update -= OnFrameworkUpdate;
-        if (_learningDirty) SaveLearningState();
     }
 }

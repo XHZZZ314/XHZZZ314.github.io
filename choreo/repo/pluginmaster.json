@@ -3,7 +3,7 @@
     "Author": "XHZZZ314",
     "Name": "ChoreoHelper",
     "InternalName": "ChoreoHelper",
-    "AssemblyVersion": "0.5.28.0",
+    "AssemblyVersion": "0.5.26.2",
     "Description": "FF14 国服编舞助手 - 时间轴编舞 + 拖动定格预览(任意时刻姿态) + 持续动作循环播放 + 宏分页生成。网页: https://xhzzz314.github.io/choreo/",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,

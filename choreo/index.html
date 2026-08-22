@@ -1594,14 +1594,6 @@ function renderBottomBar(){
     try{localStorage.setItem('choreo_engine',store.engine)}catch(e){}
     apiFetch('/settings/engine',{method:'POST',body:JSON.stringify({pinMode:store.engine==='pin'})}).then(function(){render()}).catch(function(){});
   };
-  var clrBtn=document.createElement('button');
-  clrBtn.className='btn';clrBtn.style.fontSize='10px';clrBtn.style.padding='1px 8px';
-  clrBtn.textContent='\u91CD\u7F6E\u5B66\u4E60';
-  clrBtn.title='\u6E05\u7A7A\u63D2\u4EF6\u8BB0\u5FC6\u7684\u52A8\u753B\u6570\u636E\uFF08\u5B66\u4E60\u8868/\u89C4\u8303id/\u59FF\u52BF\u7C7B\u578B\uFF09\u5E76\u91CD\u65B0\u5B66\u4E60\u2014\u2014\u52A8\u4F5C\u9519\u4E71\u65F6\u7684\u6551\u547D\u624B\u6BB5\uFF0C\u5E73\u65F6\u4E0D\u8981\u70B9';
-  clrBtn.onclick=function(){
-    if(!confirm('\u786E\u8BA4\u6E05\u7A7A\u5168\u90E8\u5B66\u4E60\u6570\u636E\uFF1F\u6E05\u7A7A\u540E\u6BCF\u4E2A\u52A8\u4F5C\u7B2C\u4E00\u6B21\u4F7F\u7528\u4F1A\u91CD\u65B0\u5B66\u4E60\uFF08\u7A0D\u6162\uFF09\u3002'))return;
-    apiFetch('/debug/clearlearned').then(function(){alert('\u5DF2\u6E05\u7A7A\uFF0C\u91CD\u65B0\u5B66\u4E60\u5F00\u59CB')}).catch(function(){});
-  };
   var html='<div>\u72B6\u6001: <span class="v">'+(store.connected?'\u5DF2\u8FDE\u63A5':'\u672A\u8FDE\u63A5')+'</span></div>'+
     '<div>\u821E\u8005: <span class="v">'+store.dancerCount+'</span></div>'+
     '<div>\u5207\u6362: <span class="v">'+sc+'</span></div>'+
@@ -1612,7 +1604,6 @@ function renderBottomBar(){
     '<div id="cursorPos">\u4F4D\u7F6E: 0.0s</div>';
   b.innerHTML=html;
   b.appendChild(engBtn);
-  b.appendChild(clrBtn);
   return b;
 }
 // Lyrics modal
