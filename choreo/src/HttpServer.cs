@@ -75,6 +75,11 @@ public sealed class HttpServer : IDisposable
                 candidate = new HttpListener();
                 candidate.Prefixes.Add($"http://localhost:{Port}/");
                 candidate.Start();
+                if (ct.IsCancellationRequested) // Dispose 与绑定竞速：绑定成功但已取消 → 立即关掉防泄漏
+                {
+                    try { candidate.Close(); } catch { }
+                    return;
+                }
                 _listener = candidate;
                 _ = ListenLoop(ct);
                 _log.Information("HTTP server listening on http://localhost:{port}/ (attempt {a})", Port, attempt);
@@ -93,13 +98,21 @@ public sealed class HttpServer : IDisposable
 
     private async Task ListenLoop(CancellationToken ct)
     {
-        while (!ct.IsCancellationRequested && _listener!.IsListening)
+        // v0.5.27：整体 try/catch —— 本任务是 fire-and-forget，Dispose 关闭监听器时在途的
+        // GetContextAsync 会抛 ObjectDisposedException，未观察的异常会被终结器重抛 →
+        // Dalamud 判定插件崩溃并禁用（实测 00:49 重载后被禁用）。绝不让异常逃出。
+        try
         {
-            HttpListenerContext ctx;
-            try { ctx = await _listener.GetContextAsync(); }
-            catch (HttpListenerException) { break; }
-            _ = Task.Run(async () => await HandleRequest(ctx, ct), ct);
+            while (!ct.IsCancellationRequested && _listener is { IsListening: true })
+            {
+                HttpListenerContext ctx;
+                try { ctx = await _listener.GetContextAsync(); }
+                catch { break; } // HttpListenerException / ObjectDisposedException（关闭竞速）→ 正常退出
+                try { await HandleRequest(ctx, ct); }
+                catch { try { ctx.Response.Close(); } catch { } }
+            }
         }
+        catch { /* 兜底：任何逃逸异常都不出任务边界 */ }
     }
 
     private async Task HandleRequest(HttpListenerContext ctx, CancellationToken ct)
@@ -150,8 +163,14 @@ public sealed class HttpServer : IDisposable
                         var req = System.Text.Json.JsonDocument.Parse(body);
                         if (req.RootElement.TryGetProperty("pinMode", out var pm))
                         {
-                            AnimationPoseFreezer.PinModeEnabled = pm.GetBoolean();
-                            _log.Information("Engine mode set: {m}", AnimationPoseFreezer.PinModeEnabled ? "pin" : "classic");
+                            var newVal = pm.GetBoolean();
+                            if (newVal != AnimationPoseFreezer.PinModeEnabled)
+                            {
+                                AnimationPoseFreezer.PinModeEnabled = newVal;
+                                // 切引擎时安全收尾：解钉 + 停预览（钉住会话跨引擎残留 = 半冻结状态）
+                                _freezer?.StopPreview();
+                                _log.Information("Engine mode set: {m}", newVal ? "pin" : "classic");
+                            }
                         }
                     }
                     catch (Exception ex) { _log.Error(ex, "Parse engine setting failed"); }
@@ -191,6 +210,7 @@ public sealed class HttpServer : IDisposable
                     "/actions/measured-durations" => GetMeasuredDurationsJson(),
                     "/debug/animstate" => _freezer?.GetDebugAnimState() ?? "{\"error\":\"no freezer\"}",
                     "/debug/diag" => _freezer?.GetDebugDiag() ?? "{\"error\":\"no freezer\"}",
+                    "/debug/clearlearned" => _freezer?.ClearLearning() ?? "{\"error\":\"no freezer\"}",
                     "/debug/tlinfo" => GetTimelineInfo(query["id"]),
                     "/debug/poke" => _freezer?.DebugPoke(query["action"]) ?? "{\"error\":\"no freezer\"}",
                     "/settings/engine" => "{\"pinMode\":" + (AnimationPoseFreezer.PinModeEnabled ? "true" : "false") + "}",
