@@ -61,6 +61,9 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
         while (_diag.Count > 60) _diag.TryDequeue(out _);
     }
     private static readonly ConcurrentDictionary<string, ushort[]> CommandTimelineSets = new();
+    // v0.5.26：命令 → 引入段即本体（游戏从不换绑主轴，如游侠姿势 4784 播完不切 4785）。
+    // 记忆后该命令直接挂引入段，不再等换绑（首次等待 ~引入段时长，之后瞬时）。
+    private static readonly ConcurrentDictionary<string, bool> IntroIsFinalTimelines = new();
 
     // 待机时间轴 id 集合（学习排除）：过渡窗口里"EmoteId 已是新表情但动画还没绑上"时
     // 槽0 是待机 —— 学习路径会把待机 id 学进缓存（曾实际发生：learned timeline 3）。
@@ -141,6 +144,9 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
     private double _diagLastWaitAt;    // 诊断去重：canonWait 上次记录时刻
     private bool _observedRowMerged;   // 已把游戏解析出的变体行合并进等待集合（本命令）
     private double _observedRowAt;     // 变体行合并时刻（canonWait 窗口顺延）
+    private double _introBoundAt = -1; // 引入段绑定时刻（-1=未绑定）
+    private float _introDur;           // 引入段时长快照（读数最大值自修正）
+    private double _introEndedAt = -1; // 引入段播完时刻（-1=引入段还在播/未开始等）
     private uint _lastMergeRejectKey;  // 诊断去重：上次拒绝合并的行号
     private ushort[] _awaitEmoteFamily = Array.Empty<ushort>(); // 同命令全部表情行号（状态机确认用族匹配）
     private bool _awaitIsLoop;         // 该表情含循环时间轴（定格目标时间需按单轮时长取模）
@@ -499,6 +505,7 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
 
         // 命令变化、或动作已被游戏结束（换绑回待机）才重新执行；
         // 同一动作连续拖动只拨时间、不重播也不重置挂载等待
+        var prevRoundWasLoop = _lastWasLoop; // 上一轮是否循环动作（本行必须在下面覆盖前读取）
         if (_lastCommand != command || _needsReexec)
         {
             // 钉住会话先解除（恢复原 Mode/BaseOverride）—— 后续命令要走正常状态机执行
@@ -540,6 +547,9 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             _facialOnly = false;
             _gaveUp = false;
             _observedRowMerged = false;
+            _introBoundAt = -1;
+            _introDur = 0;
+            _introEndedAt = -1;
             var direct = TryResolveEmote(command, out var ids);
             if (direct)
             {
@@ -642,6 +652,15 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                             TryPlayTimelinePreferred(command);
                             _execChannel = "learned";
                         }
+                    }
+                    else if (prevRoundWasLoop)
+                    {
+                        // v0.5.26：上一轮是循环动作（残留调度未清）—— 裸 PlayActionTimeline
+                        // 会被调度器丢弃（实测循环舞后 learned 直播 0.8s 不绑定，白等一轮
+                        // 重试）。直接走表情通道，由游戏正规换绑。
+                        ExecuteEmoteDirect(_awaitEmoteId);
+                        _execChannel = "emote";
+                        Diag($"exec {command}: skip learned direct play (prev round was loop)");
                     }
                     else
                     {
@@ -1015,14 +1034,40 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
             // 先绑引入段再换绑主轴（0.3-2.5s）。此刻不挂载（定格在引入段 = 错误动作）、
             // 不学习、不重试（重发命令会重起引入段 = 永远等不到主轴）。仅表内 id 等待
             // （学习到的表外变体不受影响）；3s 超时回退旧挂载（防御表数据不按惯例的行）。
-            var canonWait = _canonicalTimeline != 0 && slot0 != 0 && slot0 != _canonicalTimeline
+            // v0.5.26：等待窗口跟随引入段实际播放进度（v0.5.24 的固定 3s 对练拳 ~3s /
+            // 游侠姿势 5.9s 的引入段会在换绑前超时 → 挂到引入段 = 错姿势，或拖快了干脆
+            // 挂不上 = "被吞"）。过渡期探针的时长读数不可靠（实测先读 2.33 稳定后才 5.9），
+            // 用时间锚定：绑定时记时刻 + 时长快照（取后续读数最大值自修正），播完给 0.45s
+            // 换绑机会；仍没换到主轴 = 引入段即本体（姿势类），挂载并记忆 IntroIsFinal。
+            if (_introBoundAt < 0 && slot0 != 0 && slot0 != _canonicalTimeline
+                && _canonicalTimeline != 0 && !_idleTimelines.Contains(slot0)
+                && Array.IndexOf(_awaitTimelineIds, slot0) >= 0)
+            {
+                _introBoundAt = Now();
+                _introDur = Math.Max(0.5f, d);
+            }
+            if (_introBoundAt > 0 && d > _introDur) _introDur = d; // 绑定稳定后时长读数修正
+            var introPlayingT = _introBoundAt > 0 && Now() - _introBoundAt < _introDur + 0.6;
+            var introFinalKnown = _pendingCommand != null
+                && IntroIsFinalTimelines.TryGetValue(_pendingCommand, out var ifk) && ifk;
+            var canonWait = !introFinalKnown && _canonicalTimeline != 0 && slot0 != 0 && slot0 != _canonicalTimeline
                 && !_idleTimelines.Contains(slot0)
                 && Array.IndexOf(_awaitTimelineIds, slot0) >= 0
-                && (Now() - _lastExecTime < 3.0 || Now() - _observedRowAt < 2.5);
+                && (introPlayingT || (_introEndedAt > 0 && Now() - _introEndedAt < 0.45));
+            var introDoneThisFrame = false;
+            if (canonWait)
+            {
+                if (!introPlayingT && _introEndedAt < 0) _introEndedAt = Now();
+            }
+            else
+            {
+                introDoneThisFrame = _introEndedAt >= 0;
+                _introEndedAt = -1;
+            }
             if (canonWait && (slot0 != _diagLastWaitSlot || Now() - _diagLastWaitAt > 0.5f))
             {
                 _diagLastWaitSlot = slot0; _diagLastWaitAt = Now();
-                Diag($"canonWait: slot0={slot0} canon={_canonicalTimeline} ch={_execChannel} emote={CurrentEmoteId()}");
+                Diag($"canonWait: slot0={slot0} canon={_canonicalTimeline} ch={_execChannel} emote={CurrentEmoteId()} elapsed={Now() - _introBoundAt:F2}/{_introDur:F2}");
             }
 
             // 面部表情类（表预测）：执行后 0.3s 即完成 —— 不等主槽绑定（等不到）、不重试
@@ -1061,6 +1106,13 @@ public unsafe sealed class AnimationPoseFreezer : IDisposable
                         TryPinTimeline(slot0, triggerBind: false);
                     _log.Information("Freeze attached direct (tl={id}, dur {d:F2}s, pinned={p})", slot0, d, _hasPin);
                     Diag($"attached tl={slot0} dur={d:F2} ch={_execChannel} emote={CurrentEmoteId()} canon={_canonicalTimeline} att={_directAttempts}");
+                    // v0.5.26：等过了引入段播完仍挂在非主轴上 = 游戏从不换绑（姿势类）——
+                    // 记忆"引入段即本体"，该命令以后不再等待换绑。
+                    if (_pendingCommand != null && _canonicalTimeline != 0 && slot0 != _canonicalTimeline && introDoneThisFrame)
+                    {
+                        IntroIsFinalTimelines[_pendingCommand] = true;
+                        Diag($"intro-final learned: {_pendingCommand} tl={slot0} (no main transition after intro end)");
+                    }
                 }
                 return;
             }
